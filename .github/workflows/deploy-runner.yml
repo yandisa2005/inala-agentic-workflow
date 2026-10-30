@@ -89,8 +89,7 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Deploy as Cloud Run Job
         run: |
-          # Try updating the job if it exists; otherwise create it
-          gcloud run jobs update ${{ env.SERVICE_NAME }}-job \
+          gcloud run jobs deploy ${{ env.SERVICE_NAME }}-job \
             --project="${{ env.PROJECT_ID }}" \
             --region="${{ env.REGION }}" \
             --image="${{ env.IMAGE_TAG_SHA }}" \
