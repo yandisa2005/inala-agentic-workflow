@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # Required for Google WIF OIDC token exchange
+      id-token: write
 
     steps:
       - name: Checkout Code
@@ -85,12 +85,12 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       # -----------------------------------------------------------------------
-      # 6. Deploy to Cloud Run
+      # 6. Deploy as Cloud Run Job
       # -----------------------------------------------------------------------
-      # Option A: Deploy as a Cloud Run Job (Ideal for batch invoice ETL)
       - name: Deploy as Cloud Run Job
         run: |
-          gcloud run jobs deploy ${{ env.SERVICE_NAME }}-job \
+          # Try updating the job if it exists; otherwise create it
+          gcloud run jobs update ${{ env.SERVICE_NAME }}-job \
             --project="${{ env.PROJECT_ID }}" \
             --region="${{ env.REGION }}" \
             --image="${{ env.IMAGE_TAG_SHA }}" \
@@ -98,17 +98,14 @@ jobs:
             --set-env-vars="BOX_FOLDER_ID=426356514305,MODEL_NAME=gemini-3.8-flash,MCP_SERVER_SSE_URL=https://box-mcp-server-373951769736.us-central1.run.app/sse" \
             --set-secrets="BOX_CLIENT_ID=BOX_CLIENT_ID:latest,BOX_CLIENT_SECRET=BOX_CLIENT_SECRET:latest,BOX_SUBJECT_ID=BOX_SUBJECT_ID:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest" \
             --max-retries=1 \
-            --task-timeout=600s
+            --task-timeout=600s 
 
-      # Option B: (Alternative) Deploy as a Cloud Run Service (if continuous HTTP/Webhook listener)
-      # - name: Deploy as Cloud Run Service
-      #   run: |
-      #     gcloud run deploy ${{ env.SERVICE_NAME }}-service \
-      #       --project="${{ env.PROJECT_ID }}" \
-      #       --region="${{ env.REGION }}" \
-      #       --image="${{ env.IMAGE_TAG_SHA }}" \
-      #       --service-account="${{ env.SERVICE_ACCOUNT }}" \
-      #       --port=8080 \
-      #       --allow-unauthenticated \
-      #       --set-env-vars="BOX_FOLDER_ID=426356514305,MODEL_NAME=gemini-3.8-flash" \
-      #       --set-secrets="BOX_CLIENT_ID=BOX_CLIENT_ID:latest,BOX_CLIENT_SECRET=BOX_CLIENT_SECRET:latest,BOX_SUBJECT_ID=BOX_SUBJECT_ID:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest"
+#          gcloud run jobs create ${{ env.SERVICE_NAME }}-job \
+#            --project="${{ env.PROJECT_ID }}" \
+#            --region="${{ env.REGION }}" \
+#            --image="${{ env.IMAGE_TAG_SHA }}" \
+#            --service-account="${{ env.SERVICE_ACCOUNT }}" \
+#            --set-env-vars="BOX_FOLDER_ID=426356514305,MODEL_NAME=gemini-3.8-flash,MCP_SERVER_SSE_URL=https://box-mcp-server-373951769736.us-central1.run.app/sse" \
+#            --set-secrets="BOX_CLIENT_ID=BOX_CLIENT_ID:latest,BOX_CLIENT_SECRET=BOX_CLIENT_SECRET:latest,BOX_SUBJECT_ID=BOX_SUBJECT_ID:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest" \
+#            --max-retries=1 \
+#            --task-timeout=600s
