@@ -13,13 +13,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source tree
-COPY src/ ./src/
-
-# Ensure /app is in PYTHONPATH so python can resolve modules cleanly
-ENV PYTHONPATH=/app
+# Copy source files directly into /app
+COPY src/ .
 
 EXPOSE 8080
 
 # Shell form lets $PORT interpolate dynamically from Cloud Run
-CMD uvicorn src.main:app --host 0.0.0.0 --port ${PORT}
+CMD exec uvicorn main:app --host 0.0.0.0 --port ${PORT}
