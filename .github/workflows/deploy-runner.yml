@@ -85,19 +85,23 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       # -----------------------------------------------------------------------
-      # 6. Deploy as Cloud Run Job
+      # 6. Deploy as Cloud Run Service
       # -----------------------------------------------------------------------
-      - name: Deploy as Cloud Run Job
+      - name: Deploy Container to Cloud Run Service
         run: |
-          gcloud run jobs deploy ${{ env.SERVICE_NAME }}-job \
+          gcloud run deploy ${{ env.SERVICE_NAME }}-service \
             --project="${{ env.PROJECT_ID }}" \
             --region="${{ env.REGION }}" \
             --image="${{ env.IMAGE_TAG_SHA }}" \
             --service-account="${{ env.SERVICE_ACCOUNT }}" \
-            --set-env-vars="BOX_FOLDER_ID=426356514305,MODEL_NAME=gemini-3.8-flash,MCP_SERVER_SSE_URL=https://box-mcp-server-373951769736.us-central1.run.app/sse" \
-            --set-secrets="BOX_CLIENT_ID=BOX_CLIENT_ID:latest,BOX_CLIENT_SECRET=BOX_CLIENT_SECRET:latest,BOX_SUBJECT_ID=BOX_SUBJECT_ID:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest" \
-            --max-retries=1 \
-            --task-timeout=600s
+            --port=8080 \
+#            --no-cpu-throttling \
+            --cpu=2 \
+            --memory=2Gi \
+            --timeout=3600s \
+            --allow-unauthenticated \
+            --set-env-vars="MODEL_NAME=gemini-2.5-flash,MCP_SERVER_SSE_URL=https://box-mcp-server-373951769736.us-central1.run.app/sse" \
+            --set-secrets="BOX_CLIENT_ID=BOX_CLIENT_ID:latest,BOX_CLIENT_SECRET=BOX_CLIENT_SECRET:latest,BOX_SUBJECT_ID=BOX_SUBJECT_ID:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest"
 
 #          gcloud run jobs create ${{ env.SERVICE_NAME }}-job \
 #            --project="${{ env.PROJECT_ID }}" \
