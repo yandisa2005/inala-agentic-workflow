@@ -5,6 +5,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY box-agentic-workflow.py .
+# Copy source from src/ directory
+COPY src/ ./src/
 
-ENTRYPOINT ["python", "box-agentic-workflow.py"]
+# Run via module or direct path
+ENTRYPOINT ["python", "src/box-agentic-workflow.py"]
