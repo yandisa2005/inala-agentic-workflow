@@ -1,0 +1,114 @@
+name: Build, Push, and Deploy Runner to Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'Dockerfile'
+      - 'requirements.txt'
+      - '.github/workflows/deploy-runner.yml'
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: inala-development-project
+  REGION: us-central1
+  REPOSITORY: mcp-runners
+  IMAGE_NAME: invoice-extractor
+  SERVICE_NAME: box-invoice-sync
+  SERVICE_ACCOUNT: box-mcp-runner-sa@inala-development-project.iam.gserviceaccount.com
+  WIF_PROVIDER: projects/373951769736/locations/global/workloadIdentityPools/github-actions-pool/providers/github-actions-provider
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Required for Google WIF OIDC token exchange
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # 1. Authenticate to GCP using Workload Identity Federation
+      # -----------------------------------------------------------------------
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+          token_format: access_token
+
+      # -----------------------------------------------------------------------
+      # 2. Configure Docker Authentication for Google Artifact Registry
+      # -----------------------------------------------------------------------
+      - name: Docker Auth for Artifact Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      # -----------------------------------------------------------------------
+      # 3. Set Image Tags
+      # -----------------------------------------------------------------------
+      - name: Set Target Image URI
+        run: |
+          IMAGE_URI="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}"
+          echo "IMAGE_TAG_SHA=${IMAGE_URI}:${{ github.sha }}" >> $GITHUB_ENV
+          echo "IMAGE_TAG_LATEST=${IMAGE_URI}:latest" >> $GITHUB_ENV
+
+      # -----------------------------------------------------------------------
+      # 4. Build and Push Container Image using Docker Buildx
+      # -----------------------------------------------------------------------
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_TAG_SHA }}
+            ${{ env.IMAGE_TAG_LATEST }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # -----------------------------------------------------------------------
+      # 5. Set up gcloud CLI
+      # -----------------------------------------------------------------------
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      # -----------------------------------------------------------------------
+      # 6. Deploy to Cloud Run
+      # -----------------------------------------------------------------------
+      # Option A: Deploy as a Cloud Run Job (Ideal for batch invoice ETL)
+      - name: Deploy as Cloud Run Job
+        run: |
+          gcloud run jobs deploy ${{ env.SERVICE_NAME }}-job \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --image="${{ env.IMAGE_TAG_SHA }}" \
+            --service-account="${{ env.SERVICE_ACCOUNT }}" \
+            --set-env-vars="BOX_FOLDER_ID=426356514305,MODEL_NAME=gemini-3.8-flash,MCP_SERVER_SSE_URL=https://box-mcp-server-373951769736.us-central1.run.app/sse" \
+            --set-secrets="BOX_CLIENT_ID=BOX_CLIENT_ID:latest,BOX_CLIENT_SECRET=BOX_CLIENT_SECRET:latest,BOX_SUBJECT_ID=BOX_SUBJECT_ID:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest" \
+            --max-retries=1 \
+            --task-timeout=600s
+
+      # Option B: (Alternative) Deploy as a Cloud Run Service (if continuous HTTP/Webhook listener)
+      # - name: Deploy as Cloud Run Service
+      #   run: |
+      #     gcloud run deploy ${{ env.SERVICE_NAME }}-service \
+      #       --project="${{ env.PROJECT_ID }}" \
+      #       --region="${{ env.REGION }}" \
+      #       --image="${{ env.IMAGE_TAG_SHA }}" \
+      #       --service-account="${{ env.SERVICE_ACCOUNT }}" \
+      #       --port=8080 \
+      #       --allow-unauthenticated \
+      #       --set-env-vars="BOX_FOLDER_ID=426356514305,MODEL_NAME=gemini-3.8-flash" \
+      #       --set-secrets="BOX_CLIENT_ID=BOX_CLIENT_ID:latest,BOX_CLIENT_SECRET=BOX_CLIENT_SECRET:latest,BOX_SUBJECT_ID=BOX_SUBJECT_ID:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest"

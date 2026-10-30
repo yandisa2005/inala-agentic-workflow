@@ -1,0 +1,5 @@
+google-genai
+mcp<2
+python-dotenv
+google-auth
+httpx
