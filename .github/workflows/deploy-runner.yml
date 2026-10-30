@@ -17,8 +17,8 @@ env:
   REPOSITORY: mcp-runners
   IMAGE_NAME: box-agentic-workflow
   SERVICE_NAME: box-agentic-workflow-sync
-  WIF_PROVIDER: projects/373951769736/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-  SERVICE_ACCOUNT: box-mcp-runner-sa@inala-development-project.iam.gserviceaccount.com
+  WIF_PROVIDER: 'projects/373951769736/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
+  SERVICE_ACCOUNT: 'gh-actions-deployer@inala-development-project.iam.gserviceaccount.com'
 
 jobs:
   build-and-deploy:
