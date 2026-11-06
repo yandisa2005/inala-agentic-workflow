@@ -202,7 +202,7 @@ async def extract_invoice_fields(
     tools: List[types.Tool],
 ) -> Optional[Dict[str, Any]]:
     """Extract and validate fields from an invoice file via Gemini."""
-     logger.info("============extract_invoice_fields function===========")
+    logger.info("============extract_invoice_fields function===========")
     file_name = invoice.get("name", "unknown")
     file_id = invoice.get("id")
 
