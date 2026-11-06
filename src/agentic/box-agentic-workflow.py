@@ -49,6 +49,7 @@ llm_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 # ---------------------------------------------------------------------------
 def init_db(db_path: str = DB_PATH):
     """Ensure directory and SQLite schema exist."""
+    logger.info("============Starting the agentic workflow===========")
     db_dir = os.path.dirname(os.path.abspath(db_path))
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
