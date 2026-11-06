@@ -159,13 +159,12 @@ async def generate(
     tools: Optional[List[types.Tool]] = None,
 ) -> Any:
     """Non-blocking Gemini generation with MCP tool dispatch."""
-     logger.info("============generate function===========")
     config = (
         types.GenerateContentConfig(temperature=0, tools=tools)
         if session is not None and tools is not None
         else None
     )
-
+    logger.info("============generate function===========")
     # Use the non-blocking async client
     response = await client.aio.models.generate_content(
         model=MODEL_NAME,
