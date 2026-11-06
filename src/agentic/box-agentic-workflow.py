@@ -69,10 +69,10 @@ def init_db(db_path: str = DB_PATH):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Initializing SQLite database at %s", DB_PATH)
+    logger.info("==========Initializing SQLite database at %s", DB_PATH)
     init_db()
     yield
-    logger.info("Shutting down Box Extractor Service.")
+    logger.info("=========Shutting down Box Extractor Service.")
 
 
 app = FastAPI(
@@ -100,10 +100,11 @@ async def get_mcp_tools(session: ClientSession) -> List[types.Tool]:
     """Inspect the remote MCP server and adapt selected tools for Gemini."""
     mcp_tools = await session.list_tools()
     formatted_tools = []
+    logger.info("============get_mcp_tools===========")
 
     for tool in mcp_tools.tools:
         if tool.name in BOX_MCP_TOOLS:
-            logger.info("Registering MCP Tool: %s", tool.name)
+            logger.info("=================Registering MCP Tool: %s", tool.name)
             schema_obj = getattr(tool, "input_schema", getattr(tool, "inputSchema", {}))
 
             if hasattr(schema_obj, "model_dump"):
@@ -125,7 +126,7 @@ async def get_mcp_tools(session: ClientSession) -> List[types.Tool]:
                 )
             )
 
-    logger.info("Successfully bound %d MCP tools to Gemini.", len(formatted_tools))
+    logger.info("===========Successfully bound %d MCP tools to Gemini.", len(formatted_tools))
     return formatted_tools
 
 
@@ -158,6 +159,7 @@ async def generate(
     tools: Optional[List[types.Tool]] = None,
 ) -> Any:
     """Non-blocking Gemini generation with MCP tool dispatch."""
+     logger.info("============generate function===========")
     config = (
         types.GenerateContentConfig(temperature=0, tools=tools)
         if session is not None and tools is not None
@@ -201,10 +203,11 @@ async def extract_invoice_fields(
     tools: List[types.Tool],
 ) -> Optional[Dict[str, Any]]:
     """Extract and validate fields from an invoice file via Gemini."""
+     logger.info("============extract_invoice_fields function===========")
     file_name = invoice.get("name", "unknown")
     file_id = invoice.get("id")
 
-    logger.info("Extracting fields for: %s (id: %s)", file_name, file_id)
+    logger.info("============Extracting fields for: %s (id: %s)", file_name, file_id)
     prompt = (
         f"Extract the following fields from the invoice with file_id {file_id}: "
         "client_name, invoice_amount, product_name. "
@@ -215,7 +218,7 @@ async def extract_invoice_fields(
     first_item = raw_response[0] if isinstance(raw_response, list) and raw_response else raw_response
 
     if isinstance(first_item, dict) and "error" in first_item:
-        logger.error("Box API Error on %s: %s", file_name, first_item["error"])
+        logger.error("=============Box API Error on %s: %s", file_name, first_item["error"])
         return None
 
     if isinstance(first_item, dict) and "AI_response" in first_item:
@@ -227,17 +230,18 @@ async def extract_invoice_fields(
         result["file"] = file_name
         return result
 
-    logger.warning("Could not structure extraction for: %s. Output: %s", file_name, raw_response)
+    logger.warning("===============Could not structure extraction for: %s. Output: %s", file_name, raw_response)
     return None
 
 
 async def run_extraction_flow(folder_id: str):
     """Background task orchestrating Box discovery, extraction, and persistence."""
     headers = {}
+    logger.info("===============Starting run_extraction_flow========" )
     if BOX_DEVELOPER_TOKEN:
         headers["Authorization"] = f"Bearer {BOX_DEVELOPER_TOKEN}"
 
-    logger.info("Starting background ETL for folder: %s", folder_id)
+    logger.info("===============Starting background ETL for folder: %s", folder_id)
 
     try:
         async with sse_client(MCP_SERVER_SSE_URL, headers=headers) as (read, write):
@@ -304,6 +308,7 @@ async def trigger_extraction(
     background_tasks: BackgroundTasks,
     x_api_key: Optional[str] = Header(None)
 ):
+    logger.info("============ trigger_extraction function===========")
     if SERVICE_API_KEY and x_api_key != SERVICE_API_KEY:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
