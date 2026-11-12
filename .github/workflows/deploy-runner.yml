@@ -9,7 +9,7 @@ env:
   PROJECT_ID: inala-development-project
   REGION: us-central1
   SERVICE_NAME: box-adk-extractor-service
-  APP_NAME: box_extractor_agent
+  APP_NAME: extractor_agent
   WIF_PROVIDER: projects/373951769736/locations/global/workloadIdentityPools/github-pool/providers/github-provider
   SERVICE_ACCOUNT: gh-actions-deployer@inala-development-project.iam.gserviceaccount.com
 
@@ -49,7 +49,7 @@ jobs:
             --service_name="${{ env.SERVICE_NAME }}" \
             --app_name="${{ env.APP_NAME }}" \
             --with_ui \
-            ./box_extractor_agent \
+            ./extractor_agent \
             -- \
             --service-account="box-mcp-runner-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com" \
             --no-cpu-throttling \
