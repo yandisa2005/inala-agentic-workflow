@@ -56,5 +56,9 @@ jobs:
             --memory=2Gi \
             --timeout=3600s \
             --allow-unauthenticated \
-            --update-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},GOOGLE_CLOUD_LOCATION=global,MODEL_NAME=gemini-2.5-flash,MCP_SERVER_SSE_URL=https://box-mcp-server-373951769736.us-central1.run.app/sse" \
             --set-secrets="BOX_DEVELOPER_TOKEN=BOX_DEVELOPER_TOKEN:latest"
+          
+          gcloud run services update "${{ env.SERVICE_NAME }}" \
+            --project="${{ env.PROJECT_ID }}" \
+            --region="${{ env.REGION }}" \
+            --update-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},GOOGLE_CLOUD_LOCATION=global,MODEL_NAME=gemini-2.5-flash,MCP_SERVER_SSE_URL=https://box-mcp-server-373951769736.us-central1.run.app/sse"
