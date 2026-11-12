@@ -49,12 +49,12 @@ jobs:
             --service_name="${{ env.SERVICE_NAME }}" \
             --app_name="${{ env.APP_NAME }}" \
             --with_ui \
-            ./extractor_agent \
+            ./src/extractor_agent \
             -- \
             --service-account="box-mcp-runner-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com" \
             --no-cpu-throttling \
             --memory=2Gi \
             --timeout=3600s \
             --allow-unauthenticated \
-            --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},GOOGLE_CLOUD_LOCATION=global,MODEL_NAME=gemini-3.8-flash,MCP_SERVER_SSE_URL=https://box-mcp-server-373951769736.us-central1.run.app/sse" \
+            --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},GOOGLE_CLOUD_LOCATION=global,MODEL_NAME=gemini-2.5-flash,MCP_SERVER_SSE_URL=https://box-mcp-server-373951769736.us-central1.run.app/sse" \
             --set-secrets="BOX_DEVELOPER_TOKEN=BOX_DEVELOPER_TOKEN:latest"
