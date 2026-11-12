@@ -1,114 +1,60 @@
-name: Build, Push, and Deploy Runner to Cloud Run
+name: Deploy Box ADK Agent to Cloud Run
 
 on:
   push:
     branches:
       - main
-    paths:
-      - 'src/**'
-      - 'Dockerfile'
-      - 'requirements.txt'
-      - '.github/workflows/deploy-runner.yml'
-  workflow_dispatch:
 
 env:
   PROJECT_ID: inala-development-project
   REGION: us-central1
-  REPOSITORY: mcp-repo
-  IMAGE_NAME: box-agentic-workflow
-  SERVICE_NAME: box-agentic-workflow-sync
-  WIF_PROVIDER: 'projects/373951769736/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
-  SERVICE_ACCOUNT: 'gh-actions-deployer@inala-development-project.iam.gserviceaccount.com'
+  SERVICE_NAME: box-adk-extractor-service
+  APP_NAME: box_extractor_agent
+  WIF_PROVIDER: projects/373951769736/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+  SERVICE_ACCOUNT: gh-actions-deployer@inala-development-project.iam.gserviceaccount.com
 
 jobs:
-  build-and-deploy:
+  deploy-adk:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
 
     steps:
-      - name: Checkout Code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # -----------------------------------------------------------------------
-      # 1. Authenticate to GCP using Workload Identity Federation
-      # -----------------------------------------------------------------------
-      - name: Authenticate to Google Cloud
-        id: auth
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Google ADK CLI
+        run: pip install --upgrade google-adk
+
+      - name: Authenticate to GCP via Workload Identity Federation
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ env.WIF_PROVIDER }}
           service_account: ${{ env.SERVICE_ACCOUNT }}
-          token_format: access_token
 
-      # -----------------------------------------------------------------------
-      # 2. Configure Docker Authentication for Google Artifact Registry
-      # -----------------------------------------------------------------------
-      - name: Docker Auth for Artifact Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGION }}-docker.pkg.dev
-          username: oauth2accesstoken
-          password: ${{ steps.auth.outputs.access_token }}
-
-      # -----------------------------------------------------------------------
-      # 3. Set Image Tags
-      # -----------------------------------------------------------------------
-      - name: Set Target Image URI
-        run: |
-          IMAGE_URI="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}"
-          echo "IMAGE_TAG_SHA=${IMAGE_URI}:${{ github.sha }}" >> $GITHUB_ENV
-          echo "IMAGE_TAG_LATEST=${IMAGE_URI}:latest" >> $GITHUB_ENV
-
-      # -----------------------------------------------------------------------
-      # 4. Build and Push Container Image using Docker Buildx
-      # -----------------------------------------------------------------------
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ env.IMAGE_TAG_SHA }}
-            ${{ env.IMAGE_TAG_LATEST }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # -----------------------------------------------------------------------
-      # 5. Set up gcloud CLI
-      # -----------------------------------------------------------------------
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      # -----------------------------------------------------------------------
-      # 6. Deploy as Cloud Run Service
-      # -----------------------------------------------------------------------
-      - name: Deploy Container to Cloud Run Service
+      - name: Deploy ADK Agent to Cloud Run
         run: |
-          gcloud run deploy ${{ env.SERVICE_NAME }}-service \
+          adk deploy cloud_run \
             --project="${{ env.PROJECT_ID }}" \
             --region="${{ env.REGION }}" \
-            --image="${{ env.IMAGE_TAG_SHA }}" \
-            --service-account="${{ env.SERVICE_ACCOUNT }}" \
-            --port=8080 \
+            --service_name="${{ env.SERVICE_NAME }}" \
+            --app_name="${{ env.APP_NAME }}" \
+            --with_ui \
+            ./box_extractor_agent \
+            -- \
+            --service-account="box-mcp-runner-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com" \
             --no-cpu-throttling \
-            --cpu=2 \
             --memory=2Gi \
             --timeout=3600s \
             --allow-unauthenticated \
-            --set-env-vars="MODEL_NAME=gemini-3.8-flash,MCP_SERVER_SSE_URL=https://box-mcp-server-373951769736.us-central1.run.app/sse" \
-            --set-secrets="BOX_CLIENT_ID=BOX_CLIENT_ID:latest,BOX_CLIENT_SECRET=BOX_CLIENT_SECRET:latest,BOX_SUBJECT_ID=BOX_SUBJECT_ID:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest"
-
-#          gcloud run jobs create ${{ env.SERVICE_NAME }}-job \
-#            --project="${{ env.PROJECT_ID }}" \
-#            --region="${{ env.REGION }}" \
-#            --image="${{ env.IMAGE_TAG_SHA }}" \
-#            --service-account="${{ env.SERVICE_ACCOUNT }}" \
-#            --set-env-vars="BOX_FOLDER_ID=426356514305,MODEL_NAME=gemini-3.8-flash,MCP_SERVER_SSE_URL=https://box-mcp-server-373951769736.us-central1.run.app/sse" \
-#            --set-secrets="BOX_CLIENT_ID=BOX_CLIENT_ID:latest,BOX_CLIENT_SECRET=BOX_CLIENT_SECRET:latest,BOX_SUBJECT_ID=BOX_SUBJECT_ID:latest,GEMINI_API_KEY=GEMINI_API_KEY:latest" \
-#            --max-retries=1 \
-#            --task-timeout=600s
+            --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},GOOGLE_CLOUD_LOCATION=global,MODEL_NAME=gemini-3.8-flash,MCP_SERVER_SSE_URL=https://box-mcp-server-373951769736.us-central1.run.app/sse" \
+            --set-secrets="BOX_DEVELOPER_TOKEN=BOX_DEVELOPER_TOKEN:latest"
