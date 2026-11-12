@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 env:
   PROJECT_ID: inala-development-project
@@ -66,7 +67,7 @@ jobs:
             --memory=2Gi \
             --timeout=3600s \
             --allow-unauthenticated
-          
+
           gcloud run services update "${{ env.SERVICE_NAME }}" \
             --project="${{ env.PROJECT_ID }}" \
             --region="${{ env.REGION }}" \
