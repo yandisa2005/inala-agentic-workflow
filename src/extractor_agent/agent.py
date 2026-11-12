@@ -7,7 +7,6 @@ MCP_SERVER_SSE_URL = os.getenv(
     "MCP_SERVER_SSE_URL",
     "https://box-mcp-server-373951769736.us-central1.run.app/sse"
 )
-BOX_DEVELOPER_TOKEN = os.getenv("BOX_DEVELOPER_TOKEN", "")
 DB_PATH = os.getenv("SQLITE_DB_PATH", "/tmp/invoices.db")
 
 def save_invoice_record(file_name: str, client_name: str, invoice_amount: float, product_name: str) -> dict:
@@ -37,12 +36,9 @@ def save_invoice_record(file_name: str, client_name: str, invoice_amount: float,
         conn.commit()
     return {"status": "saved", "file": file_name}
 
-headers = {"Authorization": f"Bearer {BOX_DEVELOPER_TOKEN}"} if BOX_DEVELOPER_TOKEN else {}
-
 box_mcp_tools = MCPToolset(
     connection_params=SseConnectionParams(
         url=MCP_SERVER_SSE_URL,
-        headers=headers,
     ),
     tool_filter=[
         "box_ai_extract_freeform_tool",
