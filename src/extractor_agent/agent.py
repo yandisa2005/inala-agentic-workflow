@@ -11,7 +11,7 @@ BOX_DEVELOPER_TOKEN = os.getenv("BOX_DEVELOPER_TOKEN", "")
 DB_PATH = os.getenv("SQLITE_DB_PATH", "/tmp/invoices.db")
 
 def save_invoice_record(file_name: str, client_name: str, invoice_amount: float, product_name: str) -> dict:
-    """Persist an extracted invoice record into the local database."""
+    """Persist an extracted invoice record into the local SQLite database."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS invoices (
@@ -52,8 +52,8 @@ box_mcp_tools = MCPToolset(
 )
 
 root_agent = LlmAgent(
-    name="box_invoice_extractor",
-    model=os.getenv("MODEL_NAME", "gemini-3.8-flash"),
+    name="extractor_agent",
+    model=os.getenv("MODEL_NAME", "gemini-2.5-flash"),
     description="Extracts structured invoice fields from files inside a specified Box folder.",
     instruction=(
         "You are an automated invoice extraction agent. "
