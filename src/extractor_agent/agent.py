@@ -39,6 +39,8 @@ def save_invoice_record(file_name: str, client_name: str, invoice_amount: float,
 box_mcp_tools = MCPToolset(
     connection_params=SseConnectionParams(
         url=MCP_SERVER_SSE_URL,
+        timeout=30.0,
+        sse_read_timeout=300.0,
     ),
     tool_filter=[
         "box_ai_extract_freeform_tool",
@@ -49,7 +51,7 @@ box_mcp_tools = MCPToolset(
 
 root_agent = LlmAgent(
     name="extractor_agent",
-    model=os.getenv("MODEL_NAME", "gemini-2.5-flash"),
+    model=os.getenv("MODEL_NAME", "gemini-3.8-flash"),
     description="Extracts structured invoice fields from files inside a specified Box folder.",
     instruction=(
         "You are an automated invoice extraction agent. "
