@@ -109,6 +109,8 @@ box_mcp_tools = MCPToolset(
         "box_ai_extract_freeform_tool",
         "box_folder_items_list_tool",
         "box_folder_info_tool",
+        "box_file_move_tool",
+        "box_folder_move_tool",
     ],
 )
 
