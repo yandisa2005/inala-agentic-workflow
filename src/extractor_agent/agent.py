@@ -1,11 +1,11 @@
 import os
 import sqlite3
 from google.adk.agents import LlmAgent
-from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, SseConnectionParams
+from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StreamableHTTPConnectionParams
 
-MCP_SERVER_SSE_URL = os.getenv(
-    "MCP_SERVER_SSE_URL",
-    "https://box-mcp-server-373951769736.us-central1.run.app/sse"
+MCP_SERVER_URL = os.getenv(
+    "MCP_SERVER_URL",
+    "https://box-mcp-server-373951769736.us-central1.run.app/mcp"
 )
 DB_PATH = os.getenv("SQLITE_DB_PATH", "/tmp/invoices.db")
 
@@ -37,10 +37,9 @@ def save_invoice_record(file_name: str, client_name: str, invoice_amount: float,
     return {"status": "saved", "file": file_name}
 
 box_mcp_tools = MCPToolset(
-    connection_params=SseConnectionParams(
-        url=MCP_SERVER_SSE_URL,
+    connection_params=StreamableHTTPConnectionParams(
+        url=MCP_SERVER_URL,
         timeout=30.0,
-        sse_read_timeout=300.0,
     ),
     tool_filter=[
         "box_ai_extract_freeform_tool",
