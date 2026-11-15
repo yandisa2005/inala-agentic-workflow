@@ -1,8 +1,12 @@
 import datetime
 import json
 import os
-from typing import Optional
+import time
+from typing import Generator, Optional
 
+import google.auth.transport.requests
+import google.oauth2.id_token
+import httpx
 from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models import LlmResponse
@@ -35,6 +39,45 @@ def _emit_log(event: str, **fields) -> None:
     """Emit single-line structured JSON logs that Cloud Logging parses into jsonPayload."""
     payload = {"severity": "INFO", "event": event, **fields}
     print(json.dumps(payload, default=str), flush=True)
+
+
+class CloudRunOIDCAuth(httpx.Auth):
+    """Automatically attaches and refreshes Google Cloud Run OIDC ID tokens."""
+
+    def __init__(self, audience: str):
+        self.audience = audience.removesuffix("/mcp").rstrip("/")
+        self._token: Optional[str] = None
+        self._expiry: float = 0.0
+
+    def _get_valid_token(self) -> str:
+        # Refresh 5 minutes before the standard 60-minute OIDC token expiration
+        if not self._token or time.time() >= (self._expiry - 300):
+            auth_req = google.auth.transport.requests.Request()
+            self._token = google.oauth2.id_token.fetch_id_token(auth_req, self.audience)
+            self._expiry = time.time() + 3600
+        return self._token
+
+    def auth_flow(
+        self, request: httpx.Request
+    ) -> Generator[httpx.Request, httpx.Response, None]:
+        request.headers["Authorization"] = f"Bearer {self._get_valid_token()}"
+        response = yield request
+        if response.status_code in (401, 403):
+            self._token = None
+            request.headers["Authorization"] = f"Bearer {self._get_valid_token()}"
+            yield request
+
+
+def _mcp_httpx_client_factory(
+    headers: Optional[dict[str, str]] = None,
+    timeout: Optional[httpx.Timeout] = None,
+    auth: Optional[httpx.Auth] = None,
+) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        headers=headers,
+        timeout=timeout or httpx.Timeout(30.0),
+        auth=CloudRunOIDCAuth(MCP_SERVER_URL),
+    )
 
 
 def log_model_response(
@@ -114,6 +157,7 @@ box_mcp_tools = MCPToolset(
     connection_params=StreamableHTTPConnectionParams(
         url=MCP_SERVER_URL,
         timeout=30.0,
+        httpx_client_factory=_mcp_httpx_client_factory,
     ),
     tool_filter=[
         "box_ai_extract_freeform_tool",
