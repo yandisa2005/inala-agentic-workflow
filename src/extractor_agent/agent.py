@@ -1,19 +1,34 @@
+import datetime
 import json
 import os
-import sqlite3
 from typing import Optional
 
 from google.adk.agents import LlmAgent
 from google.adk.agents.callback_context import CallbackContext
 from google.adk.models import LlmResponse
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset, StreamableHTTPConnectionParams
+from google.cloud import datastore
 from google.genai import types
 
 MCP_SERVER_URL = os.getenv(
     "MCP_SERVER_URL",
     "https://box-mcp-server-373951769736.us-central1.run.app/mcp",
 )
-DB_PATH = os.getenv("SQLITE_DB_PATH", "/tmp/invoices.db")
+DATASTORE_KIND = os.getenv("DATASTORE_KIND", "Invoice")
+DATASTORE_NAMESPACE = os.getenv("DATASTORE_NAMESPACE") or None
+
+_datastore_client: Optional[datastore.Client] = None
+
+
+def _get_datastore_client() -> datastore.Client:
+    """Lazy-initialize a reusable Datastore client using Application Default Credentials."""
+    global _datastore_client
+    if _datastore_client is None:
+        _datastore_client = datastore.Client(
+            project=os.getenv("GOOGLE_CLOUD_PROJECT"),
+            namespace=DATASTORE_NAMESPACE,
+        )
+    return _datastore_client
 
 
 def _emit_log(event: str, **fields) -> None:
@@ -46,14 +61,13 @@ def log_model_response(
         text="\n".join(text_parts) if text_parts else None,
         tool_calls=tool_calls,
     )
-    return None  # Preserve original LlmResponse unmodified
+    return None
 
 
 def log_agent_final_response(
     callback_context: CallbackContext,
 ) -> Optional[types.Content]:
     """Log completion of the full agent invocation."""
-    print("----------------Agent Call Completing--------------")
     _emit_log(
         "adk_agent_turn_complete",
         agent=callback_context.agent_name,
@@ -65,39 +79,35 @@ def log_agent_final_response(
 def save_invoice_record(
     file_name: str, client_name: str, invoice_amount: float, product_name: str
 ) -> dict:
-    """Persist an extracted invoice record into the local SQLite database."""
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS invoices (
-                file TEXT PRIMARY KEY UNIQUE,
-                client TEXT,
-                amount REAL,
-                product TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.execute(
-            """
-            INSERT INTO invoices (file, client, amount, product)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(file) DO UPDATE SET
-                client=excluded.client,
-                amount=excluded.amount,
-                product=excluded.product,
-                updated_at=CURRENT_TIMESTAMP
-            """,
-            (file_name, client_name, invoice_amount, product_name),
-        )
-        conn.commit()
+    """Persist or upsert an extracted invoice record in GCP Cloud Datastore."""
+    client = _get_datastore_client()
+    key = client.key(DATASTORE_KIND, file_name)
+
+    entity = datastore.Entity(key=key)
+    entity.update({
+        "file": file_name,
+        "client": client_name,
+        "amount": float(invoice_amount),
+        "product": product_name,
+        "updated_at": datetime.datetime.now(datetime.timezone.utc),
+    })
+    client.put(entity)
 
     _emit_log(
         "invoice_record_saved",
+        backend="datastore",
+        kind=DATASTORE_KIND,
         file=file_name,
         client=client_name,
-        amount=invoice_amount,
+        amount=float(invoice_amount),
         product=product_name,
     )
-    return {"status": "saved", "file": file_name}
+    return {
+        "status": "saved",
+        "backend": "datastore",
+        "kind": DATASTORE_KIND,
+        "file": file_name,
+    }
 
 
 box_mcp_tools = MCPToolset(
@@ -117,7 +127,7 @@ box_mcp_tools = MCPToolset(
 root_agent = LlmAgent(
     name="extractor_agent",
     model=os.getenv("MODEL_NAME", "gemini-3.8-flash"),
-    description="Extracts structured invoice fields from files inside a specified Box folder.",
+    description="Extracts structured invoice fields from files inside a specified Box folder and moves processed items.",
     instruction=(
         "You are an automated invoice extraction agent. "
         "When given a Box folder_id:\n"
@@ -125,7 +135,9 @@ root_agent = LlmAgent(
         "2. For each invoice file, extract client_name, invoice_amount (as a float), and product_name "
         "using box_ai_extract_freeform_tool.\n"
         "3. Save each extracted invoice using save_invoice_record.\n"
-        "4. Summarize the extracted invoices and total amount."
+        "4. If a destination folder_id is provided, move processed files using box_file_move_tool "
+        "(or move an entire folder using box_folder_move_tool when explicitly requested).\n"
+        "5. Summarize the extracted invoices, total amount, and any moved items."
     ),
     tools=[box_mcp_tools, save_invoice_record],
     after_model_callback=log_model_response,
