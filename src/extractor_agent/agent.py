@@ -166,19 +166,18 @@ def log_agent_final_response(
 
 def _send_email_notification(to_email: str, subject: str, html_body: str) -> None:
     """Dispatch approval notification email via SMTP (credentials injected from Secret Manager)."""
-    raw_host = os.getenv("SMTP_HOST") or os.getenv("SMTP_Host") or ""
+    raw_host = (os.getenv("SMTP_HOST") or os.getenv("SMTP_Host") or "").strip()
+    # Strip protocol schemes and port numbers if present
+    smtp_host = raw_host.removeprefix("http://").removeprefix("https://").removeprefix("smtp://").split(":")[0]
     smtp_port = int(os.getenv("SMTP_PORT", os.getenv("SMTP_Port", "587")))
-    smtp_user = os.getenv("SMTP_USER") or os.getenv("SMTP_User")
-    smtp_password = os.getenv("SMTP_PASSWORD") or os.getenv("SMTP_Password")
+    smtp_user = (os.getenv("SMTP_USER") or os.getenv("SMTP_User") or "").strip()
+    smtp_password = (os.getenv("SMTP_PASSWORD") or os.getenv("SMTP_Password") or "").strip()
 
     missing_vars = [
         var_name
         for var_name, val in [("SMTP_HOST", smtp_host), ("SMTP_USER", smtp_user), ("SMTP_PASSWORD", smtp_password)]
         if not val
     ]
-    # Strip whitespace, newlines, and accidental protocol schemes (e.g., smtp:// or https://)
-    smtp_host = raw_host.strip().removeprefix("http://").removeprefix("https://").removeprefix("smtp://").split(":")[0]
-
     if missing_vars:
         _emit_log("smtp_config_missing", severity="ERROR", missing=missing_vars)
         raise ValueError(f"Missing required SMTP environment variable(s): {', '.join(missing_vars)}")
