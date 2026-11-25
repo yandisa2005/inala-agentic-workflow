@@ -3,6 +3,7 @@ import json
 import os
 import secrets
 import smtplib
+import ssl
 import time
 from email.message import EmailMessage
 from typing import Generator, Optional
@@ -189,10 +190,20 @@ def _send_email_notification(to_email: str, subject: str, html_body: str) -> Non
     msg.set_content("Open this message in an HTML-capable email client to approve or reject the Box move request.")
     msg.add_alternative(html_body, subtype="html")
 
-    with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
-        server.starttls()
-        server.login(smtp_user, smtp_password)
-        server.send_message(msg)
+    tls_context = ssl.create_default_context()
+
+    if smtp_port == 465:
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=tls_context, timeout=15) as server:
+            server.ehlo()
+            server.login(smtp_user, smtp_password)
+            server.send_message(msg)
+    else:
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
+            server.ehlo()
+            server.starttls(context=tls_context)
+            server.ehlo()
+            server.login(smtp_user, smtp_password)
+            server.send_message(msg)
 
 
 def request_box_move_approval(
@@ -281,11 +292,25 @@ def request_box_move_approval(
     <p><small>This approval link expires in 24 hours. No files or folders have been moved yet.</small></p>
     """
 
-    _send_email_notification(
-        to_email=recipient,
-        subject=f"[Action Required] Approve Box Move ({len(normalized_items)} item(s)) -> {destination_parent_name}",
-        html_body=html_body,
-    )
+    try:
+        _send_email_notification(
+            to_email=recipient,
+            subject=f"[Action Required] Approve Box Move ({len(normalized_items)} item(s)) -> {destination_parent_name}",
+            html_body=html_body,
+        )
+    except Exception as exc:
+        _emit_log(
+            "box_move_approval_email_failed",
+            severity="ERROR",
+            error=str(exc),
+            approver=recipient,
+            approval_token=approval_token,
+        )
+        return {
+            "status": "error",
+            "message": f"Approval request recorded ({approval_token[:8]}...), but failed to dispatch email: {exc}",
+            "approval_token": approval_token,
+        }
 
     _emit_log(
         "box_move_approval_requested",
