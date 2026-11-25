@@ -304,7 +304,7 @@ def request_box_move_approval(
     client = _get_datastore_client()
     approval_token = secrets.token_urlsafe(32)
     recipient = approver_email or DEFAULT_APPROVER_EMAIL
-    if not recipient or "gmail.com" in recipient:
+    if not recipient or "yourdomain.com" in recipient:
         return {
             "status": "error",
             "message": "Valid approver email must be provided or configured via BOX_MOVE_APPROVER_EMAIL.",
