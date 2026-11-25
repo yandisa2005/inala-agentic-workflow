@@ -166,8 +166,8 @@ def log_agent_final_response(
 
 
 def _send_email_notification(to_email: str, subject: str, html_body: str) -> None:
-    """Dispatch approval notification email via SMTP (credentials injected from Secret Manager)."""
-    # 1. Check for HTTPS-based email APIs first (bypasses Cloud Run SMTP port drops)
+    """Dispatch approval notification email via HTTPS APIs or SMTP."""
+    # 1. Check for Resend HTTPS API (bypasses Cloud Run SMTP port drops)
     resend_api_key = os.getenv("RESEND_API_KEY")
     if resend_api_key:
         resp = httpx.post(
@@ -184,6 +184,25 @@ def _send_email_notification(to_email: str, subject: str, html_body: str) -> Non
         if resp.status_code >= 400:
             raise RuntimeError(f"Resend HTTP error ({resp.status_code}): {resp.text}")
         _emit_log("email_sent_via_https", provider="resend", to=to_email)
+        return
+
+    # 2. Check for SendGrid HTTPS API
+    sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
+    if sendgrid_api_key:
+        resp = httpx.post(
+            "https://api.sendgrid.com/v3/mail/send",
+            headers={"Authorization": f"Bearer {sendgrid_api_key.strip()}"},
+            json={
+                "personalizations": [{"to": [{"email": to_email}]}],
+                "from": {"email": os.getenv("EMAIL_FROM", "no-reply@yourdomain.com")},
+                "subject": subject,
+                "content": [{"type": "text/html", "value": html_body}],
+            },
+            timeout=15.0,
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"SendGrid HTTP error ({resp.status_code}): {resp.text}")
+        _emit_log("email_sent_via_https", provider="sendgrid", to=to_email)
         return
 
     # 2. SMTP Transport
@@ -285,6 +304,11 @@ def request_box_move_approval(
     client = _get_datastore_client()
     approval_token = secrets.token_urlsafe(32)
     recipient = approver_email or DEFAULT_APPROVER_EMAIL
+    if not recipient or "gmail.com" in recipient:
+        return {
+            "status": "error",
+            "message": "Valid approver email must be provided or configured via BOX_MOVE_APPROVER_EMAIL.",
+        }
     now = datetime.datetime.now(datetime.timezone.utc)
 
     key = client.key(APPROVAL_KIND, approval_token)
@@ -396,9 +420,9 @@ move_approval_agent = LlmAgent(
         "When asked to move one or more files or folders to a destination parent folder:\n"
         "1. Use box_folder_info_tool (and box_folder_items_list_tool if needed) to verify the exact names and IDs "
         "of the items being moved and the destination parent folder.\n"
-        "2. Identify the requester (use the provided name/email, or default to 'Web User' if not specified).\n"
-        "3. Immediately batch all requested items into a call to request_box_move_approval with accurate "
-        "item_type ('file' or 'folder'), item_id, item_name, and requested_by values. Do not pause to ask for confirmation.\n"
+        "2. Identify the requester and any designated approver email address from the user request.\n"
+        "3. Immediately batch all requested items into a call to request_box_move_approval with "
+        "item_type ('file' or 'folder'), item_id, item_name, requested_by, and approver_email (if specified). Do not pause to ask for confirmation.\n"
         "4. Inform the user that the approval email has been dispatched and that all files/folders remain in "
         "their original locations until approved."
     ),
