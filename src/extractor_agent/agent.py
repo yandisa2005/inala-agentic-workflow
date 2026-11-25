@@ -167,6 +167,26 @@ def log_agent_final_response(
 
 def _send_email_notification(to_email: str, subject: str, html_body: str) -> None:
     """Dispatch approval notification email via SMTP (credentials injected from Secret Manager)."""
+    # 1. Check for HTTPS-based email APIs first (bypasses Cloud Run SMTP port drops)
+    resend_api_key = os.getenv("RESEND_API_KEY")
+    if resend_api_key:
+        resp = httpx.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {resend_api_key.strip()}"},
+            json={
+                "from": os.getenv("EMAIL_FROM", "onboarding@resend.dev"),
+                "to": [to_email],
+                "subject": subject,
+                "html": html_body,
+            },
+            timeout=15.0,
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Resend HTTP error ({resp.status_code}): {resp.text}")
+        _emit_log("email_sent_via_https", provider="resend", to=to_email)
+        return
+
+    # 2. SMTP Transport
     raw_host = (os.getenv("SMTP_HOST") or os.getenv("SMTP_Host") or "").strip()
     # Strip protocol schemes and port numbers if present
     smtp_host = raw_host.removeprefix("http://").removeprefix("https://").removeprefix("smtp://").split(":")[0]
@@ -194,12 +214,12 @@ def _send_email_notification(to_email: str, subject: str, html_body: str) -> Non
 
     def _attempt_send(port: int, use_ssl: bool) -> None:
         if use_ssl:
-            with smtplib.SMTP_SSL(smtp_host, port, context=tls_context, timeout=15) as server:
+            with smtplib.SMTP_SSL(smtp_host, port, context=tls_context, timeout=10) as server:
                 server.ehlo()
                 server.login(smtp_user, smtp_password)
                 server.send_message(msg)
         else:
-            with smtplib.SMTP(smtp_host, port, timeout=15) as server:
+            with smtplib.SMTP(smtp_host, port, timeout=10) as server:
                 server.ehlo()
                 server.starttls(context=tls_context)
                 server.ehlo()
@@ -214,6 +234,7 @@ def _send_email_notification(to_email: str, subject: str, html_body: str) -> Non
             _emit_log(
                 "smtp_port_fallback",
                 severity="WARNING",
+                smtp_host=smtp_host,
                 original_port=smtp_port,
                 fallback_port=465,
                 error=str(exc),
@@ -320,6 +341,7 @@ def request_box_move_approval(
             "box_move_approval_email_failed",
             severity="ERROR",
             error=str(exc),
+            smtp_host=os.getenv("SMTP_HOST"),
             approver=recipient,
             approval_token=approval_token,
         )
