@@ -22,8 +22,9 @@ MCP_SERVER_URL = os.getenv(
     "https://box-mcp-server-373951769736.us-central1.run.app/mcp",
 )
 # DATASTORE_KIND = os.getenv("DATASTORE_KIND", "Invoice")
-APPROVAL_KIND = os.getenv("APPROVAL_DATASTORE_KIND", "BoxMoveRequest")
+APPROVAL_KIND = os.getenv("APPROVAL_DATASTORE_KIND", "box-move-request")
 DATASTORE_NAMESPACE = os.getenv("DATASTORE_NAMESPACE") or None
+DATASTORE_DATABASE = os.getenv("DATASTORE_DATABASE", "approval-db")
 APPROVAL_BASE_URL = os.getenv(
     "APPROVAL_BASE_URL",
     "https://box-adk-extractor-service-373951769736.us-central1.run.app",
@@ -40,6 +41,7 @@ def _get_datastore_client() -> datastore.Client:
         _datastore_client = datastore.Client(
             project=os.getenv("GOOGLE_CLOUD_PROJECT"),
             namespace=DATASTORE_NAMESPACE,
+            database=DATASTORE_DATABASE,
         )
     return _datastore_client
 
