@@ -165,10 +165,33 @@ def log_agent_final_response(
 #     }
 
 
+def _get_secret(secret_name: str, default: Optional[str] = None) -> Optional[str]:
+    """Retrieve configuration from environment variable, falling back to GCP Secret Manager."""
+    val = os.getenv(secret_name) or os.getenv(secret_name.upper()) or os.getenv(secret_name.lower())
+    if val:
+        return val.strip()
+
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT") or "inala-development-project"
+    try:
+        from google.cloud import secretmanager
+
+        client = secretmanager.SecretManagerServiceClient()
+        resource_name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
+        response = client.access_secret_version(name=resource_name)
+        payload = response.payload.data.decode("UTF-8").strip()
+        if payload:
+            _emit_log("secret_resolved_from_manager", secret_name=secret_name)
+            return payload
+    except Exception as exc:
+        _emit_log("secret_lookup_failed", severity="DEBUG", secret_name=secret_name, error=str(exc))
+
+    return default
+
+
 def _send_email_notification(to_email: str, subject: str, html_body: str) -> None:
     """Dispatch approval notification email via HTTPS APIs or SMTP."""
     # 1. Check for Resend HTTPS API (bypasses Cloud Run SMTP port drops)
-    resend_api_key = os.getenv("RESEND_API_KEY")
+    resend_api_key = _get_secret("RESEND_API_KEY")
     if resend_api_key:
         resp = httpx.post(
             "https://api.resend.com/emails",
@@ -187,7 +210,7 @@ def _send_email_notification(to_email: str, subject: str, html_body: str) -> Non
         return
 
     # 2. Check for SendGrid HTTPS API
-    sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
+    sendgrid_api_key = _get_secret("SENDGRID_API_KEY")
     if sendgrid_api_key:
         resp = httpx.post(
             "https://api.sendgrid.com/v3/mail/send",
