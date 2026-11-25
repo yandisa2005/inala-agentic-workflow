@@ -296,8 +296,8 @@ def request_box_move_approval(
     }
 
 
-# Read-only Box tools (invoice extraction tool commented out for now; move tools gated behind approval)
-readonly_box_tools = MCPToolset(
+# Box MCP Toolset (move tools gated behind approval)
+box_tools = MCPToolset(
     connection_params=StreamableHTTPConnectionParams(
         url=MCP_SERVER_URL,
         timeout=30.0,
@@ -307,6 +307,8 @@ readonly_box_tools = MCPToolset(
         # "box_ai_extract_freeform_tool",
         "box_folder_items_list_tool",
         "box_folder_info_tool",
+        "box_file_metadata_create_tool",
+        "box_file_metadata_update_tool",
     ],
 )
 
@@ -325,7 +327,7 @@ move_approval_agent = LlmAgent(
         "4. Inform the user that the approval email has been dispatched and that all files/folders remain in "
         "their original locations until approved."
     ),
-    tools=[readonly_box_tools, request_box_move_approval],
+    tools=[box_tools, request_box_move_approval],
     after_model_callback=log_model_response,
     after_agent_callback=log_agent_final_response,
 )
@@ -337,13 +339,14 @@ root_agent = LlmAgent(
     instruction=(
         "You are a Box workspace management and governance agent.\n"
         "1. When given a Box folder_id to inspect, list items using box_folder_items_list_tool "
-        "and retrieve folder metadata using box_folder_info_tool.\n"
-        # "2. Extract client_name, invoice_amount, and product_name using box_ai_extract_freeform_tool and persist via save_invoice_record.\n"
-        "2. Whenever a user asks to move ANY Box file(s) OR folder(s) to a different parent folder, "
+        "and retrieve folder info using box_folder_info_tool.\n"
+        "2. When requested to update or set metadata on Box files, use box_file_metadata_update_tool "
+        "(or box_file_metadata_create_tool if no metadata instance exists yet).\n"
+        "3. Whenever a user asks to move ANY Box file(s) OR folder(s) to a different parent folder, "
         "ALWAYS transfer to move_approval_agent.\n"
-        "3. Summarize folder contents, metadata, and any pending move approval requests clearly."
+        "4. Summarize folder contents, metadata updates, and any pending move approval requests clearly."
     ),
-    tools=[readonly_box_tools],  # save_invoice_record commented out for now
+    tools=[box_tools],
     sub_agents=[move_approval_agent],
     after_model_callback=log_model_response,
     after_agent_callback=log_agent_final_response,
