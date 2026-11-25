@@ -172,7 +172,7 @@ def _send_email_notification(to_email: str, subject: str, html_body: str) -> Non
     smtp_host = raw_host.removeprefix("http://").removeprefix("https://").removeprefix("smtp://").split(":")[0]
     smtp_port = int(os.getenv("SMTP_PORT", os.getenv("SMTP_Port", "587")))
     smtp_user = (os.getenv("SMTP_USER") or os.getenv("SMTP_User") or "").strip()
-    smtp_password = (os.getenv("SMTP_PASSWORD") or os.getenv("SMTP_Password") or "").strip()
+    smtp_password = (os.getenv("SMTP_PASSWORD") or os.getenv("SMTP_Password") or "").strip().replace(" ", "")
 
     missing_vars = [
         var_name
@@ -192,25 +192,42 @@ def _send_email_notification(to_email: str, subject: str, html_body: str) -> Non
 
     tls_context = ssl.create_default_context()
 
-    if smtp_port == 465:
-        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=tls_context, timeout=15) as server:
-            server.ehlo()
-            server.login(smtp_user, smtp_password)
-            server.send_message(msg)
-    else:
-        with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
-            server.ehlo()
-            server.starttls(context=tls_context)
-            server.ehlo()
-            server.login(smtp_user, smtp_password)
-            server.send_message(msg)
+    def _attempt_send(port: int, use_ssl: bool) -> None:
+        if use_ssl:
+            with smtplib.SMTP_SSL(smtp_host, port, context=tls_context, timeout=15) as server:
+                server.ehlo()
+                server.login(smtp_user, smtp_password)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_host, port, timeout=15) as server:
+                server.ehlo()
+                server.starttls(context=tls_context)
+                server.ehlo()
+                server.login(smtp_user, smtp_password)
+                server.send_message(msg)
+
+    try:
+        _attempt_send(smtp_port, use_ssl=(smtp_port == 465))
+    except (smtplib.SMTPServerDisconnected, ConnectionResetError, OSError) as exc:
+        # If port 587 dropped connection, retry with implicit SSL on port 465
+        if smtp_port != 465:
+            _emit_log(
+                "smtp_port_fallback",
+                severity="WARNING",
+                original_port=smtp_port,
+                fallback_port=465,
+                error=str(exc),
+            )
+            _attempt_send(465, use_ssl=True)
+        else:
+            raise
 
 
 def request_box_move_approval(
     items: list[dict[str, str]],
     destination_parent_id: str,
     destination_parent_name: str,
-    requested_by: str,
+    requested_by: str = "Web User",
     reason: str = "",
     approver_email: Optional[str] = None,
 ) -> dict:
@@ -357,9 +374,9 @@ move_approval_agent = LlmAgent(
         "When asked to move one or more files or folders to a destination parent folder:\n"
         "1. Use box_folder_info_tool (and box_folder_items_list_tool if needed) to verify the exact names and IDs "
         "of the items being moved and the destination parent folder.\n"
-        "2. Confirm who is requesting the move (ask if unknown, or use the user's identity if provided).\n"
-        "3. Batch all requested items into a single call to request_box_move_approval with accurate "
-        "item_type ('file' or 'folder'), item_id, and item_name values.\n"
+        "2. Identify the requester (use the provided name/email, or default to 'Web User' if not specified).\n"
+        "3. Immediately batch all requested items into a call to request_box_move_approval with accurate "
+        "item_type ('file' or 'folder'), item_id, item_name, and requested_by values. Do not pause to ask for confirmation.\n"
         "4. Inform the user that the approval email has been dispatched and that all files/folders remain in "
         "their original locations until approved."
     ),
