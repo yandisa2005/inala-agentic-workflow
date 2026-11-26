@@ -298,6 +298,9 @@ def request_box_move_approval(
     client = _get_datastore_client()
     approval_token = secrets.token_urlsafe(32)
     recipient = approver_email or DEFAULT_APPROVER_EMAIL
+    # Ensure routes are attached to the running FastAPI app
+    _register_approval_routes()
+
     if not recipient or recipient.endswith("@yourdomain.com"):
         return {
             "status": "error",
@@ -395,6 +398,32 @@ def request_box_move_approval(
     }
 
 
+def check_box_move_status(approval_token: str) -> dict:
+    """Check whether a Box move approval request was approved, rejected, or is still pending.
+
+    Args:
+        approval_token: The approval token returned when the move was requested.
+    """
+    token_clean = approval_token.strip()
+    client = _get_datastore_client()
+    key = client.key(APPROVAL_KIND, token_clean)
+    entity = client.get(key)
+
+    if not entity:
+        return {"status": "not_found", "message": f"No move request found for token: {token_clean}"}
+
+    return {
+        "status": entity.get("status"),
+        "destination_parent_name": entity.get("destination_parent_name"),
+        "requested_by": entity.get("requested_by"),
+        "created_at": str(entity.get("created_at")),
+        "approved_at": str(entity.get("approved_at")) if entity.get("approved_at") else None,
+        "rejected_at": str(entity.get("rejected_at")) if entity.get("rejected_at") else None,
+        "items": entity.get("items", []),
+        "execution_results": entity.get("execution_results", []),
+    }
+
+
 # Box MCP Toolset (move tools gated behind approval)
 box_tools = MCPToolset(
     connection_params=StreamableHTTPConnectionParams(
@@ -422,10 +451,10 @@ move_approval_agent = LlmAgent(
         "2. Identify the requester and any designated approver email address from the user request.\n"
         "3. Immediately batch all requested items into a call to request_box_move_approval with "
         "item_type ('file' or 'folder'), item_id, item_name, requested_by, and approver_email (if specified). Do not pause to ask for confirmation.\n"
-        "4. Inform the user that the approval email has been dispatched and that all files/folders remain in "
-        "their original locations until approved."
+        "4. Inform the user that the approval email has been dispatched and provide the approval token.\n"
+        "5. If asked about the status of a move request, use check_box_move_status to check whether it has been approved."
     ),
-    tools=[box_tools, request_box_move_approval],
+    tools=[box_tools, request_box_move_approval, check_box_move_status],
     after_model_callback=log_model_response,
     after_agent_callback=log_agent_final_response,
 )
@@ -439,11 +468,11 @@ approval_router = APIRouter()
 
 async def _execute_box_move(item_id: str, item_type: str, dest_id: str) -> dict:
     """Invoke Box MCP server over SSE to move an item to destination_parent_id."""
-    auth = CloudRunOIDCAuth(MCP_SERVER_URL)
-    token = auth._get_valid_token()
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-
     try:
+        auth = CloudRunOIDCAuth(MCP_SERVER_URL)
+        token = auth._get_valid_token()
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+
         from mcp import ClientSession
         from mcp.client.sse import sse_client
 
@@ -493,6 +522,12 @@ async def _execute_box_move(item_id: str, item_type: str, dest_id: str) -> dict:
 
 async def process_approval_decision(token: str, decision: str) -> HTMLResponse:
     """Validate approval token in Datastore and execute or reject the move."""
+    _emit_log(
+        "approval_http_request_received",
+        token_prefix=token[:8] if token else "",
+        decision=decision,
+    )
+
     decision_clean = decision.strip().lower()
     if decision_clean not in ("approve", "reject"):
         return HTMLResponse("<h2>Invalid decision parameter. Must be 'approve' or 'reject'.</h2>", status_code=400)
@@ -590,8 +625,7 @@ def _register_approval_routes() -> None:
             if isinstance(obj, FastAPI):
                 if not any(getattr(r, "path", None) == "/approvals/respond" for r in obj.routes):
                     obj.include_router(approval_router)
-                    _emit_log("approval_route_registered", path="/approvals/respond")
-                return
+                    _emit_log("approval_route_registered", path="/approvals/respond", app_id=id(obj))
     except Exception as exc:
         _emit_log("approval_route_registration_deferred", error=str(exc))
 
@@ -611,9 +645,10 @@ root_agent = LlmAgent(
         "(or box_file_metadata_create_tool if no metadata instance exists yet).\n"
         "3. Whenever a user asks to move ANY Box file(s) OR folder(s) to a different parent folder, "
         "ALWAYS transfer to move_approval_agent.\n"
-        "4. Summarize folder contents, metadata updates, and any pending move approval requests clearly."
+        "4. When asked about the status of an approval request, use check_box_move_status.\n"
+        "5. Summarize folder contents, metadata updates, and any pending move approval requests clearly."
     ),
-    tools=[box_tools],
+    tools=[box_tools, check_box_move_status],
     sub_agents=[move_approval_agent],
     after_model_callback=log_model_response,
     after_agent_callback=log_agent_final_response,
