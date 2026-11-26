@@ -1,5 +1,6 @@
 import datetime
 import html
+import gc
 import json
 import os
 import secrets
@@ -9,6 +10,8 @@ import time
 from email.message import EmailMessage
 from typing import Generator, Optional
 
+from fastapi import APIRouter
+from fastapi.responses import HTMLResponse
 import google.auth.transport.requests
 import google.oauth2.id_token
 import httpx
@@ -426,6 +429,175 @@ move_approval_agent = LlmAgent(
     after_model_callback=log_model_response,
     after_agent_callback=log_agent_final_response,
 )
+
+# ---------------------------------------------------------------------------
+# Webhook / Approval Endpoint Handling
+# ---------------------------------------------------------------------------
+
+approval_router = APIRouter()
+
+
+async def _execute_box_move(item_id: str, item_type: str, dest_id: str) -> dict:
+    """Invoke Box MCP server over SSE to move an item to destination_parent_id."""
+    auth = CloudRunOIDCAuth(MCP_SERVER_URL)
+    token = auth._get_valid_token()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+    try:
+        from mcp import ClientSession
+        from mcp.client.sse import sse_client
+
+        async with sse_client(MCP_SERVER_URL, headers=headers, timeout=30.0) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                tools_resp = await session.list_tools()
+                tools = tools_resp.tools
+
+                target_keyword = "file" if item_type == "file" else "folder"
+                move_tool = None
+                for t in tools:
+                    name = t.name.lower()
+                    if "move" in name and target_keyword in name:
+                        move_tool = t
+                        break
+                if not move_tool:
+                    for t in tools:
+                        if "move" in t.name.lower():
+                            move_tool = t
+                            break
+
+                if not move_tool:
+                    return {"status": "error", "message": f"No move tool available on Box MCP for {item_type}."}
+
+                schema = getattr(move_tool, "inputSchema", {}) or {}
+                props = schema.get("properties", {}) if isinstance(schema, dict) else {}
+
+                args = {}
+                for k in [f"{target_keyword}_id", "item_id", "id", "file_id", "folder_id"]:
+                    if k in props:
+                        args[k] = item_id
+                        break
+                if not args and props:
+                    args[list(props.keys())[0]] = item_id
+
+                for k in ["destination_parent_id", "parent_id", "destination_folder_id", "parent"]:
+                    if k in props:
+                        args[k] = {"id": dest_id} if k == "parent" else dest_id
+                        break
+
+                call_res = await session.call_tool(move_tool.name, arguments=args)
+                return {"status": "success", "tool": move_tool.name, "result": str(call_res)}
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
+
+async def process_approval_decision(token: str, decision: str) -> HTMLResponse:
+    """Validate approval token in Datastore and execute or reject the move."""
+    decision_clean = decision.strip().lower()
+    if decision_clean not in ("approve", "reject"):
+        return HTMLResponse("<h2>Invalid decision parameter. Must be 'approve' or 'reject'.</h2>", status_code=400)
+
+    client = _get_datastore_client()
+    key = client.key(APPROVAL_KIND, token)
+    entity = client.get(key)
+
+    if not entity:
+        return HTMLResponse(
+            "<div style='font-family:sans-serif;padding:30px;max-width:600px;margin:auto;'>"
+            "<h2 style='color:#d93025;'>Approval Request Not Found</h2>"
+            "<p>This token is invalid or has expired.</p></div>",
+            status_code=404,
+        )
+
+    current_status = entity.get("status", "PENDING")
+    if current_status != "PENDING":
+        return HTMLResponse(
+            f"<div style='font-family:sans-serif;padding:30px;max-width:600px;margin:auto;'>"
+            f"<h2>Request Already Processed</h2>"
+            f"<p>This request has already been marked as <strong>{current_status}</strong>.</p></div>",
+            status_code=200,
+        )
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    expires_at = entity.get("expires_at")
+    if expires_at and now > expires_at:
+        entity["status"] = "EXPIRED"
+        client.put(entity)
+        return HTMLResponse(
+            "<div style='font-family:sans-serif;padding:30px;max-width:600px;margin:auto;'>"
+            "<h2 style='color:#d93025;'>Approval Request Expired</h2>"
+            "<p>This approval link has expired. A new move request must be initiated.</p></div>",
+            status_code=410,
+        )
+
+    if decision_clean == "reject":
+        entity["status"] = "REJECTED"
+        entity["rejected_at"] = now
+        client.put(entity)
+        _emit_log("box_move_rejected", approval_token=token)
+        return HTMLResponse(
+            "<div style='font-family:sans-serif;padding:30px;max-width:600px;margin:auto;'>"
+            "<h2 style='color:#d93025;'>Move Request Rejected</h2>"
+            "<p>The requested file/folder moves were rejected. No items have been moved in Box.</p></div>",
+            status_code=200,
+        )
+
+    # Decision is approve
+    items = entity.get("items", [])
+    dest_id = entity.get("destination_parent_id")
+    dest_name = entity.get("destination_parent_name", dest_id)
+
+    results = []
+    for it in items:
+        res = await _execute_box_move(it["item_id"], it["item_type"], dest_id)
+        results.append({"item_id": it["item_id"], "item_name": it["item_name"], **res})
+
+    entity["status"] = "APPROVED"
+    entity["approved_at"] = now
+    entity["execution_results"] = results
+    client.put(entity)
+
+    _emit_log("box_move_approved_and_executed", approval_token=token, results=results)
+
+    rendered_items = "".join(
+        f"<li><strong>[{it['item_type'].upper()}]</strong> {html.escape(it['item_name'])}</li>"
+        for it in items
+    )
+    return HTMLResponse(
+        f"""
+        <div style="font-family:sans-serif;padding:30px;max-width:600px;margin:40px auto;border:1px solid #e0e0e0;border-radius:8px;">
+            <h2 style="color:#137333;">✓ Move Request Approved & Executed</h2>
+            <p>The following items have been successfully moved in Box to <strong>{html.escape(str(dest_name))}</strong>:</p>
+            <ul>{rendered_items}</ul>
+            <p style="color:#5f6368;font-size:12px;">Token: <code>{token[:8]}...</code> | Processed at {now.strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
+        </div>
+        """,
+        status_code=200,
+    )
+
+
+@approval_router.get("/approvals/respond", response_class=HTMLResponse)
+async def handle_approval_response(token: str = "", decision: str = ""):
+    return await process_approval_decision(token, decision)
+
+
+def _register_approval_routes() -> None:
+    """Bind approval router dynamically to any FastAPI instance in the host process."""
+    try:
+        from fastapi import FastAPI
+
+        for obj in gc.get_objects():
+            if isinstance(obj, FastAPI):
+                if not any(getattr(r, "path", None) == "/approvals/respond" for r in obj.routes):
+                    obj.include_router(approval_router)
+                    _emit_log("approval_route_registered", path="/approvals/respond")
+                return
+    except Exception as exc:
+        _emit_log("approval_route_registration_deferred", error=str(exc))
+
+
+# Register route on startup
+_register_approval_routes()
 
 root_agent = LlmAgent(
     name="extractor_agent",
