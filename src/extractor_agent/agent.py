@@ -1,4 +1,5 @@
 import datetime
+import html
 import json
 import os
 import secrets
@@ -22,7 +23,6 @@ MCP_SERVER_URL = os.getenv(
     "MCP_SERVER_URL",
     "https://box-mcp-server-373951769736.us-central1.run.app/mcp",
 )
-# DATASTORE_KIND = os.getenv("DATASTORE_KIND", "Invoice")
 APPROVAL_KIND = os.getenv("APPROVAL_DATASTORE_KIND", "box-move-request")
 DATASTORE_NAMESPACE = os.getenv("DATASTORE_NAMESPACE") or None
 DATASTORE_DATABASE = os.getenv("DATASTORE_DATABASE", "approval-db")
@@ -130,58 +130,26 @@ def log_agent_final_response(
     return None
 
 
-# --- Temporarily disabled: Invoice Extraction Persistence ---
-# def save_invoice_record(
-#     file_name: str, client_name: str, invoice_amount: float, product_name: str
-# ) -> dict:
-#     """Persist or upsert an extracted invoice record in GCP Cloud Datastore."""
-#     client = _get_datastore_client()
-#     key = client.key(DATASTORE_KIND, file_name)
-#
-#     entity = datastore.Entity(key=key)
-#     entity.update({
-#         "file": file_name,
-#         "client": client_name,
-#         "amount": float(invoice_amount),
-#         "product": product_name,
-#         "updated_at": datetime.datetime.now(datetime.timezone.utc),
-#     })
-#     client.put(entity)
-#
-#     _emit_log(
-#         "invoice_record_saved",
-#         backend="datastore",
-#         kind=DATASTORE_KIND,
-#         file=file_name,
-#         client=client_name,
-#         amount=float(invoice_amount),
-#         product=product_name,
-#     )
-#     return {
-#         "status": "saved",
-#         "backend": "datastore",
-#         "kind": DATASTORE_KIND,
-#         "file": file_name,
-#     }
-
-
-def _get_secret(secret_name: str, default: Optional[str] = None) -> Optional[str]:
-    """Retrieve configuration from environment variable, falling back to GCP Secret Manager."""
+def _get_config_var(secret_name: str, default: Optional[str] = None) -> Optional[str]:
+    """Retrieve configuration from environment variable, falling back to Secret Manager if available."""
     val = os.getenv(secret_name) or os.getenv(secret_name.upper()) or os.getenv(secret_name.lower())
     if val:
         return val.strip()
 
-    project_id = os.getenv("GOOGLE_CLOUD_PROJECT") or "inala-development-project"
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "inala-development-project")
     try:
-        from google.cloud import secretmanager
+        from google.cloud import secretmanager  # type: ignore[attr-defined]
 
         client = secretmanager.SecretManagerServiceClient()
         resource_name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
         response = client.access_secret_version(name=resource_name)
         payload = response.payload.data.decode("UTF-8").strip()
         if payload:
-            _emit_log("secret_resolved_from_manager", secret_name=secret_name)
+            _emit_log("secret_resolved_from_manager", secret_name=secret_name, project_id=project_id)
             return payload
+    except (ImportError, AttributeError):
+        # SDK not installed; environment variables are the primary source
+        pass
     except Exception as exc:
         _emit_log("secret_lookup_failed", severity="DEBUG", secret_name=secret_name, error=str(exc))
 
@@ -189,9 +157,9 @@ def _get_secret(secret_name: str, default: Optional[str] = None) -> Optional[str
 
 
 def _send_email_notification(to_email: str, subject: str, html_body: str) -> None:
-    """Dispatch approval notification email via HTTPS APIs or SMTP."""
+    """Dispatch approval notification email via HTTPS APIs (Resend/SendGrid) or SMTP."""
     # 1. Check for Resend HTTPS API (bypasses Cloud Run SMTP port drops)
-    resend_api_key = _get_secret("RESEND_API_KEY")
+    resend_api_key = _get_config_var("RESEND_API_KEY")
     if resend_api_key:
         resp = httpx.post(
             "https://api.resend.com/emails",
@@ -210,7 +178,7 @@ def _send_email_notification(to_email: str, subject: str, html_body: str) -> Non
         return
 
     # 2. Check for SendGrid HTTPS API
-    sendgrid_api_key = _get_secret("SENDGRID_API_KEY")
+    sendgrid_api_key = _get_config_var("SENDGRID_API_KEY")
     if sendgrid_api_key:
         resp = httpx.post(
             "https://api.sendgrid.com/v3/mail/send",
@@ -228,7 +196,7 @@ def _send_email_notification(to_email: str, subject: str, html_body: str) -> Non
         _emit_log("email_sent_via_https", provider="sendgrid", to=to_email)
         return
 
-    # 2. SMTP Transport
+    # 3. SMTP Transport
     raw_host = (os.getenv("SMTP_HOST") or os.getenv("SMTP_Host") or "").strip()
     # Strip protocol schemes and port numbers if present
     smtp_host = raw_host.removeprefix("http://").removeprefix("https://").removeprefix("smtp://").split(":")[0]
@@ -327,10 +295,10 @@ def request_box_move_approval(
     client = _get_datastore_client()
     approval_token = secrets.token_urlsafe(32)
     recipient = approver_email or DEFAULT_APPROVER_EMAIL
-    if not recipient or "yourdomain.com" in recipient:
+    if not recipient or recipient.endswith("@yourdomain.com"):
         return {
             "status": "error",
-            "message": "Valid approver email must be provided or configured via BOX_MOVE_APPROVER_EMAIL.",
+            "message": "A valid approver email must be provided or configured via BOX_MOVE_APPROVER_EMAIL.",
         }
     now = datetime.datetime.now(datetime.timezone.utc)
 
@@ -353,16 +321,22 @@ def request_box_move_approval(
     approve_url = f"{APPROVAL_BASE_URL}/approvals/respond?token={approval_token}&decision=approve"
     reject_url = f"{APPROVAL_BASE_URL}/approvals/respond?token={approval_token}&decision=reject"
 
+    safe_requester = html.escape(requested_by)
+    safe_dest_name = html.escape(destination_parent_name)
+    safe_dest_id = html.escape(str(destination_parent_id))
+    safe_reason = html.escape(reason) if reason else "Not specified"
+
     item_rows = "".join(
-        f"<li><strong>[{it['item_type'].upper()}]</strong> {it['item_name']} (ID: <code>{it['item_id']}</code>)</li>"
+        f"<li><strong>[{it['item_type'].upper()}]</strong> {html.escape(it['item_name'])} "
+        f"(ID: <code>{html.escape(it['item_id'])}</code>)</li>"
         for it in normalized_items
     )
 
     html_body = f"""
     <h3>Box Move Approval Required ({len(normalized_items)} item(s))</h3>
-    <p><strong>Requested By:</strong> {requested_by}</p>
-    <p><strong>Destination Parent Folder:</strong> {destination_parent_name} (ID: <code>{destination_parent_id}</code>)</p>
-    <p><strong>Reason:</strong> {reason or "Not specified"}</p>
+    <p><strong>Requested By:</strong> {safe_requester}</p>
+    <p><strong>Destination Parent Folder:</strong> {safe_dest_name} (ID: <code>{safe_dest_id}</code>)</p>
+    <p><strong>Reason:</strong> {safe_reason}</p>
     <p><strong>Items Queued for Move:</strong></p>
     <ul>{item_rows}</ul>
     <p>
@@ -426,7 +400,6 @@ box_tools = MCPToolset(
         httpx_client_factory=_mcp_httpx_client_factory,
     ),
     tool_filter=[
-        # "box_ai_extract_freeform_tool",
         "box_folder_items_list_tool",
         "box_folder_info_tool",
         "box_file_metadata_create_tool",
