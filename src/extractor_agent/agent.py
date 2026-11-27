@@ -556,11 +556,32 @@ async def _execute_batch_box_moves(items: list[dict], dest_id: str) -> list[dict
                 if not args and props:
                     args[list(props.keys())[0]] = item_id
 
-                for k in ["destination_parent_id", "parent_id", "destination_folder_id", "parent"]:
+                dest_candidates = [
+                    "destination_parent_folder_id",
+                    "destination_parent_id",
+                    "destination_folder_id",
+                    "parent_folder_id",
+                    "parent_id",
+                    "parent",
+                ]
+                for k in dest_candidates:
                     if k in props:
                         prop_type = props[k].get("type") if isinstance(props[k], dict) else None
                         args[k] = {"id": dest_id} if (prop_type == "object" or k == "parent") else dest_id
                         break
+
+                # Check that all required schema properties are satisfied before calling
+                required_props = schema.get("required", [])
+                missing_required = [req for req in required_props if req not in args]
+                if missing_required:
+                    schema_keys = list(props.keys())
+                    err_msg = (
+                        f"Tool '{move_tool.get('name')}' requires parameter(s) {missing_required}, "
+                        f"which could not be mapped. Available parameters in tool schema: {schema_keys}"
+                    )
+                    print(f"------{err_msg}------", flush=True)
+                    results.append({"item_id": item_id, "item_name": item_name, "status": "error", "message": err_msg})
+                    continue
 
                 tool_name = move_tool.get("name")
                 print("------Calling move tool------", flush=True)
@@ -584,12 +605,23 @@ async def _execute_batch_box_moves(items: list[dict], dest_id: str) -> list[dict
                 is_err = call_res_json.get("result", {}).get("isError", False) or "error" in call_res_json
                 status = "error" if is_err else "success"
 
+                # Extract readable text from tool content if present
+                content_blocks = call_res_json.get("result", {}).get("content", [])
+                readable_texts = [
+                    c.get("text", "") for c in content_blocks if isinstance(c, dict) and c.get("text")
+                ]
+                extracted_text = "\n".join(readable_texts) if readable_texts else ""
+
                 # Keep Datastore storage concise (<1500 bytes) to prevent Datastore index limit errors
                 if status == "success":
                     clean_result = f"Successfully moved to destination {dest_id}"
                 else:
-                    err_detail = call_res_json.get("error") or call_res_json.get("result", {})
-                    clean_result = str(err_detail)[:500]
+                    err_detail = (
+                        extracted_text
+                        or call_res_json.get("error")
+                        or call_res_json.get("result", {})
+                    )
+                    clean_result = str(err_detail).replace("\n", " ")[:500]
 
                 results.append({
                     "item_id": item_id,
