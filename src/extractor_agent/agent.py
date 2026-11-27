@@ -473,6 +473,8 @@ async def _execute_box_move(item_id: str, item_type: str, dest_id: str) -> dict:
         token = auth._get_valid_token()
         headers = {"Authorization": f"Bearer {token}"} if token else {}
 
+        print("------In_execute_box_move 00 ------")
+
         from mcp import ClientSession
         from mcp.client.sse import sse_client
 
@@ -483,8 +485,10 @@ async def _execute_box_move(item_id: str, item_type: str, dest_id: str) -> dict:
                 tools = tools_resp.tools
 
                 target_keyword = "file" if item_type == "file" else "folder"
+                print("------In_execute_box_move 11 ------")
                 move_tool = None
                 for t in tools:
+                    print("------In_execute_box_move 22 Tool : {t.name} ------")
                     name = t.name.lower()
                     if "move" in name and target_keyword in name:
                         print('----------Move Tool Found------------')
@@ -501,6 +505,8 @@ async def _execute_box_move(item_id: str, item_type: str, dest_id: str) -> dict:
 
                 schema = getattr(move_tool, "inputSchema", {}) or {}
                 props = schema.get("properties", {}) if isinstance(schema, dict) else {}
+
+                print("------In_execute_box_move 33 ------")
 
                 args = {}
                 for k in [f"{target_keyword}_id", "item_id", "id", "file_id", "folder_id"]:
@@ -592,8 +598,9 @@ async def process_approval_decision(token: str, decision: str) -> HTMLResponse:
 
     results = []
     for it in items:
-        print(f"----------Moving the item: {process_approval_decision} to {dest_name}");
+        print(f"----------Moving the item: {it["item_id"]} to {dest_name}");
         res = await _execute_box_move(it["item_id"], it["item_type"], dest_id)
+        print("------------move call completed--------");
         results.append({"item_id": it["item_id"], "item_name": it["item_name"], **res})
 
     entity["status"] = "APPROVED"
