@@ -1,4 +1,5 @@
 import datetime
+import asyncio
 import html
 import gc
 import json
@@ -466,72 +467,90 @@ move_approval_agent = LlmAgent(
 approval_router = APIRouter()
 
 
-async def _execute_box_move(item_id: str, item_type: str, dest_id: str) -> dict:
-    """Invoke Box MCP server over SSE to move an item to destination_parent_id."""
+async def _execute_batch_box_moves(items: list[dict], dest_id: str) -> list[dict]:
+    """Invoke Box MCP server over a single SSE session to move all approved items."""
     try:
-        auth = CloudRunOIDCAuth(MCP_SERVER_URL)
-        token = auth._get_valid_token()
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
-
         print("------In_execute_box_move 00 ------")
+        auth = CloudRunOIDCAuth(MCP_SERVER_URL)
+        # Fetch token off the async event loop to prevent blocking
+        token = await asyncio.to_thread(auth._get_valid_token)
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
 
         from mcp import ClientSession
         from mcp.client.sse import sse_client
 
+        results = []
         async with sse_client(MCP_SERVER_URL, headers=headers, timeout=30.0) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 tools_resp = await session.list_tools()
                 tools = tools_resp.tools
 
-                target_keyword = "file" if item_type == "file" else "folder"
-                print("------In_execute_box_move 11 ------")
-                move_tool = None
-                for t in tools:
-                    print("------In_execute_box_move 22 Tool : {t.name} ------")
-                    name = t.name.lower()
-                    if "move" in name and target_keyword in name:
-                        print('----------Move Tool Found------------')
-                        move_tool = t
-                        break
-                if not move_tool:
+                print("---------Tools: {tools.length}---------")
+
+                for it in items:
+                    item_id = it["item_id"]
+                    item_type = it["item_type"]
+                    item_name = it["item_name"]
+                    target_keyword = "file" if item_type == "file" else "folder"
+
+                    print(f"----------Moving the item: {item_id} ({item_name}) to destination {dest_id}----------")
+                    print("------In_execute_box_move 11 ------")
+
+                    move_tool = None
                     for t in tools:
-                        if "move" in t.name.lower():
+                        print(f"------In_execute_box_move 22 Tool : {t.name} ------")
+                        name = t.name.lower()
+                        if ("move" in name or "update" in name) and target_keyword in name:
+                            print("----------Move Tool Found------------")
                             move_tool = t
                             break
+                    if not move_tool:
+                        for t in tools:
+                            if "move" in t.name.lower() or "update" in t.name.lower():
+                                move_tool = t
+                                break
 
-                if not move_tool:
-                    return {"status": "error", "message": f"No move tool available on Box MCP for {item_type}."}
+                    if not move_tool:
+                        results.append({"item_id": item_id, "item_name": item_name, "status": "error", "message": f"No move tool for {item_type}"})
+                        continue
 
-                schema = getattr(move_tool, "inputSchema", {}) or {}
-                props = schema.get("properties", {}) if isinstance(schema, dict) else {}
+                    schema = getattr(move_tool, "inputSchema", {}) or {}
+                    props = schema.get("properties", {}) if isinstance(schema, dict) else {}
 
-                print("------In_execute_box_move 33 ------")
+                    print("------In_execute_box_move 33 ------")
 
-                args = {}
-                for k in [f"{target_keyword}_id", "item_id", "id", "file_id", "folder_id"]:
-                    if k in props:
-                        args[k] = item_id
-                        break
-                if not args and props:
-                    args[list(props.keys())[0]] = item_id
+                    args = {}
+                    for k in [f"{target_keyword}_id", "item_id", "id", "file_id", "folder_id"]:
+                        if k in props:
+                            args[k] = item_id
+                            break
+                    if not args and props:
+                        args[list(props.keys())[0]] = item_id
 
-                for k in ["destination_parent_id", "parent_id", "destination_folder_id", "parent"]:
-                    if k in props:
-                        args[k] = {"id": dest_id} if k == "parent" else dest_id
-                        break
+                    for k in ["destination_parent_id", "parent_id", "destination_folder_id", "parent"]:
+                        if k in props:
+                            prop_type = props[k].get("type") if isinstance(props[k], dict) else None
+                            args[k] = {"id": dest_id} if (prop_type == "object" or k == "parent") else dest_id
+                            break
 
-                print("------Calling move tool------")
-                call_res = await session.call_tool(move_tool.name, arguments=args)
-                call_res_json = (
-                    call_res.model_dump_json(indent=2)
-                    if hasattr(call_res, "model_dump_json")
-                    else json.dumps(call_res, indent=2, default=str)
-                )
-                print(f"-------------Call response:\n{call_res_json}")
-                return {"status": "success", "tool": move_tool.name, "result": str(call_res)}
+                    print("------Calling move tool------")
+                    call_res = await session.call_tool(move_tool.name, arguments=args)
+                    call_res_json = (
+                        call_res.model_dump_json(indent=2)
+                        if hasattr(call_res, "model_dump_json")
+                        else json.dumps(call_res, indent=2, default=str)
+                    )
+                    print(f"-------------Call response:\n{call_res_json}")
+                    print("------------move call completed--------")
+
+                    is_err = getattr(call_res, "isError", False)
+                    status = "error" if is_err else "success"
+                    results.append({"item_id": item_id, "item_name": item_name, "status": status, "tool": move_tool.name, "result": str(call_res)})
+
+        return results
     except Exception as exc:
-        return {"status": "error", "message": str(exc)}
+        return [{"status": "error", "message": str(exc)}]
 
 
 async def process_approval_decision(token: str, decision: str) -> HTMLResponse:
@@ -596,13 +615,8 @@ async def process_approval_decision(token: str, decision: str) -> HTMLResponse:
     dest_id = entity.get("destination_parent_id")
     dest_name = entity.get("destination_parent_name", dest_id)
 
-    results = []
-    for it in items:
-        itemId = it["item_id"];
-        print(f"----------Moving the item: {itemId} to {dest_name}");
-        res = await _execute_box_move(it["item_id"], it["item_type"], dest_id)
-        print("------------move call completed--------");
-        results.append({"item_id": it["item_id"], "item_name": it["item_name"], **res})
+    print(f"----------Initiating move of {len(items)} item(s) to {dest_name} (ID: {dest_id})----------")
+    results = await _execute_batch_box_moves(items, dest_id)
 
     entity["status"] = "APPROVED"
     entity["approved_at"] = now
@@ -630,7 +644,7 @@ async def process_approval_decision(token: str, decision: str) -> HTMLResponse:
 
 @approval_router.get("/approvals/respond", response_class=HTMLResponse)
 async def handle_approval_response(token: str = "", decision: str = ""):
-    print(f"---------Decision: {decision}---------");
+    print(f"---------Decision: {decision}---------")
     return await process_approval_decision(token, decision)
 
 
