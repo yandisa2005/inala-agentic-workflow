@@ -544,17 +544,17 @@ async def _execute_batch_box_moves(items: list[dict], dest_id: str) -> list[dict
 
                 args = {}
                 for k in [f"{target_keyword}_id", "item_id", "id", "file_id", "folder_id"]:
-                        if k in props:
-                            args[k] = item_id
-                            break
-                    if not args and props:
-                        args[list(props.keys())[0]] = item_id
+                    if k in props:
+                        args[k] = item_id
+                        break
+                if not args and props:
+                    args[list(props.keys())[0]] = item_id
 
-                    for k in ["destination_parent_id", "parent_id", "destination_folder_id", "parent"]:
-                        if k in props:
-                            prop_type = props[k].get("type") if isinstance(props[k], dict) else None
-                            args[k] = {"id": dest_id} if (prop_type == "object" or k == "parent") else dest_id
-                            break
+                for k in ["destination_parent_id", "parent_id", "destination_folder_id", "parent"]:
+                    if k in props:
+                        prop_type = props[k].get("type") if isinstance(props[k], dict) else None
+                        args[k] = {"id": dest_id} if (prop_type == "object" or k == "parent") else dest_id
+                        break
 
                 tool_name = move_tool.get("name")
                 print("------Calling move tool------", flush=True)
