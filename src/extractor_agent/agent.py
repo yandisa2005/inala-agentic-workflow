@@ -598,7 +598,8 @@ async def process_approval_decision(token: str, decision: str) -> HTMLResponse:
 
     results = []
     for it in items:
-        print(f"----------Moving the item: {it["item_id"]} to {dest_name}");
+        itemId = it["item_id"];
+        print(f"----------Moving the item: {itemId} to {dest_name}");
         res = await _execute_box_move(it["item_id"], it["item_type"], dest_id)
         print("------------move call completed--------");
         results.append({"item_id": it["item_id"], "item_name": it["item_name"], **res})
