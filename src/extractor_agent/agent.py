@@ -547,7 +547,7 @@ async def _execute_batch_box_moves(items: list[dict], dest_id: str) -> list[dict
                     is_err = getattr(call_res, "isError", False)
                     status = "error" if is_err else "success"
                     results.append({"item_id": item_id, "item_name": item_name, "status": status, "tool": move_tool.name, "result": str(call_res)})
-
+        print(f"----------results: {results}----------");
         return results
     except Exception as exc:
         return [{"status": "error", "message": str(exc)}]
@@ -623,7 +623,7 @@ async def process_approval_decision(token: str, decision: str) -> HTMLResponse:
     entity["execution_results"] = results
     client.put(entity)
 
-    _emit_log("box_move_approved_and_executed", approval_token=token, results=results)
+    _emit_log("----------box_move_approved_and_executed----------", approval_token=token, results=results)
 
     rendered_items = "".join(
         f"<li><strong>[{it['item_type'].upper()}]</strong> {html.escape(it['item_name'])}</li>"
