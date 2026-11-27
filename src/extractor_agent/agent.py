@@ -487,6 +487,7 @@ async def _execute_box_move(item_id: str, item_type: str, dest_id: str) -> dict:
                 for t in tools:
                     name = t.name.lower()
                     if "move" in name and target_keyword in name:
+                        print('----------Move Tool Found------------')
                         move_tool = t
                         break
                 if not move_tool:
@@ -514,7 +515,14 @@ async def _execute_box_move(item_id: str, item_type: str, dest_id: str) -> dict:
                         args[k] = {"id": dest_id} if k == "parent" else dest_id
                         break
 
+                print("------Calling move tool------")
                 call_res = await session.call_tool(move_tool.name, arguments=args)
+                call_res_json = (
+                    call_res.model_dump_json(indent=2)
+                    if hasattr(call_res, "model_dump_json")
+                    else json.dumps(call_res, indent=2, default=str)
+                )
+                print(f"-------------Call response:\n{call_res_json}")
                 return {"status": "success", "tool": move_tool.name, "result": str(call_res)}
     except Exception as exc:
         return {"status": "error", "message": str(exc)}
@@ -523,7 +531,7 @@ async def _execute_box_move(item_id: str, item_type: str, dest_id: str) -> dict:
 async def process_approval_decision(token: str, decision: str) -> HTMLResponse:
     """Validate approval token in Datastore and execute or reject the move."""
     _emit_log(
-        "approval_http_request_received",
+        "-----approval_http_request_received-----",
         token_prefix=token[:8] if token else "",
         decision=decision,
     )
@@ -584,6 +592,7 @@ async def process_approval_decision(token: str, decision: str) -> HTMLResponse:
 
     results = []
     for it in items:
+        print(f"----------Moving the item: {process_approval_decision} to {dest_name}");
         res = await _execute_box_move(it["item_id"], it["item_type"], dest_id)
         results.append({"item_id": it["item_id"], "item_name": it["item_name"], **res})
 
@@ -613,6 +622,7 @@ async def process_approval_decision(token: str, decision: str) -> HTMLResponse:
 
 @approval_router.get("/approvals/respond", response_class=HTMLResponse)
 async def handle_approval_response(token: str = "", decision: str = ""):
+    print(f"---------Decision: {decision}---------");
     return await process_approval_decision(token, decision)
 
 
