@@ -577,12 +577,20 @@ async def _execute_batch_box_moves(items: list[dict], dest_id: str) -> list[dict
 
                 is_err = call_res_json.get("result", {}).get("isError", False) or "error" in call_res_json
                 status = "error" if is_err else "success"
+
+                # Keep Datastore storage concise (<1500 bytes) to prevent Datastore index limit errors
+                if status == "success":
+                    clean_result = f"Successfully moved to destination {dest_id}"
+                else:
+                    err_detail = call_res_json.get("error") or call_res_json.get("result", {})
+                    clean_result = str(err_detail)[:500]
+
                 results.append({
                     "item_id": item_id,
                     "item_name": item_name,
                     "status": status,
                     "tool": tool_name,
-                    "result": str(call_res_json.get("result", call_res_json)),
+                    "result": clean_result,
                 })
 
         print(f"----------results: {results}----------", flush=True)
@@ -662,10 +670,15 @@ async def process_approval_decision(token: str, decision: str) -> HTMLResponse:
     failed_items = [r for r in results if r.get("status") == "error"]
     entity["execution_results"] = results
 
+    entity.exclude_from_indexes.add("execution_results")
+
     if failed_items:
         entity["status"] = "EXECUTION_FAILED" if len(failed_items) == len(items) else "PARTIALLY_EXECUTED"
         entity["failed_at"] = now
-        client.put(entity)
+        try:
+            client.put(entity)
+        except Exception as put_err:
+            _emit_log("datastore_update_error", severity="ERROR", error=str(put_err))
         _emit_log("box_move_execution_failed", approval_token=token, results=results)
 
         error_rows = "".join(
@@ -686,7 +699,10 @@ async def process_approval_decision(token: str, decision: str) -> HTMLResponse:
 
     entity["status"] = "APPROVED"
     entity["approved_at"] = now
-    client.put(entity)
+    try:
+        client.put(entity)
+    except Exception as put_err:
+        _emit_log("datastore_update_error", severity="ERROR", error=str(put_err))
 
     _emit_log("----------box_move_approved_and_executed----------", approval_token=token, results=results)
 
