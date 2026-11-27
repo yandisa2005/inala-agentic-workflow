@@ -8,11 +8,12 @@ import secrets
 import smtplib
 import ssl
 import time
+import traceback
 from email.message import EmailMessage
 from typing import Generator, Optional
 
 from fastapi import APIRouter
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 import google.auth.transport.requests
 import google.oauth2.id_token
 import httpx
@@ -467,61 +468,82 @@ move_approval_agent = LlmAgent(
 approval_router = APIRouter()
 
 
+def _format_exception(exc: Exception) -> str:
+    """Unwrap Python 3.11 ExceptionGroup / BaseExceptionGroup into readable errors."""
+    if hasattr(exc, "exceptions"):
+        nested = "; ".join(str(e) for e in exc.exceptions)
+        return f"{exc} [{nested}]"
+    return str(exc)
+
+
 async def _execute_batch_box_moves(items: list[dict], dest_id: str) -> list[dict]:
-    """Invoke Box MCP server over a single SSE session to move all approved items."""
+    """Invoke Box MCP server to move all approved items using Streamable HTTP / JSON-RPC."""
     try:
-        print("------In_execute_box_move 00 ------")
+        print("------In_execute_box_move 00 ------", flush=True)
         auth = CloudRunOIDCAuth(MCP_SERVER_URL)
         # Fetch token off the async event loop to prevent blocking
         token = await asyncio.to_thread(auth._get_valid_token)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
 
-        from mcp import ClientSession
-        from mcp.client.sse import sse_client
-
         results = []
-        async with sse_client(MCP_SERVER_URL, headers=headers, timeout=30.0) as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                tools_resp = await session.list_tools()
-                tools = tools_resp.tools
+        async with httpx.AsyncClient(timeout=30.0) as http_client:
+            http_headers = {
+                **headers,
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+            }
 
-                print("---------Tools: {tools.length}---------")
+            # List available tools on the Box MCP server
+            list_payload = {"jsonrpc": "2.0", "id": "1", "method": "tools/list", "params": {}}
+            resp = await http_client.post(MCP_SERVER_URL, headers=http_headers, json=list_payload)
+            resp.raise_for_status()
 
-                for it in items:
-                    item_id = it["item_id"]
-                    item_type = it["item_type"]
-                    item_name = it["item_name"]
-                    target_keyword = "file" if item_type == "file" else "folder"
+            resp_data = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+            if not resp_data and "data:" in resp.text:
+                for line in resp.text.splitlines():
+                    if line.startswith("data:"):
+                        resp_data = json.loads(line[5:].strip())
+                        break
 
-                    print(f"----------Moving the item: {item_id} ({item_name}) to destination {dest_id}----------")
-                    print("------In_execute_box_move 11 ------")
+            tools = resp_data.get("result", {}).get("tools", [])
+            print(f"---------Tools: {len(tools)}---------", flush=True)
 
-                    move_tool = None
+            for it in items:
+                item_id = it["item_id"]
+                item_type = it["item_type"]
+                item_name = it["item_name"]
+                target_keyword = "file" if item_type == "file" else "folder"
+
+                print(f"----------Moving the item: {item_id} ({item_name}) to destination {dest_id}----------", flush=True)
+                print("------In_execute_box_move 11 ------", flush=True)
+
+                move_tool = None
+                for t in tools:
+                    name = t.get("name", "").lower()
+                    print(f"------In_execute_box_move 22 Tool : {t.get('name')} ------", flush=True)
+                    if ("move" in name or "update" in name) and target_keyword in name:
+                        print("----------Move Tool Found------------", flush=True)
+                        move_tool = t
+                        break
+                if not move_tool:
                     for t in tools:
-                        print(f"------In_execute_box_move 22 Tool : {t.name} ------")
-                        name = t.name.lower()
-                        if ("move" in name or "update" in name) and target_keyword in name:
-                            print("----------Move Tool Found------------")
+                        name = t.get("name", "").lower()
+                        if "move" in name or "update" in name:
                             move_tool = t
                             break
-                    if not move_tool:
-                        for t in tools:
-                            if "move" in t.name.lower() or "update" in t.name.lower():
-                                move_tool = t
-                                break
 
-                    if not move_tool:
-                        results.append({"item_id": item_id, "item_name": item_name, "status": "error", "message": f"No move tool for {item_type}"})
-                        continue
+                if not move_tool:
+                    tool_names = [t.get("name") for t in tools]
+                    results.append({"item_id": item_id, "item_name": item_name, "status": "error", "message": f"No move tool for {item_type}. Available: {tool_names}"})
+                    continue
 
-                    schema = getattr(move_tool, "inputSchema", {}) or {}
-                    props = schema.get("properties", {}) if isinstance(schema, dict) else {}
+                schema = move_tool.get("inputSchema", {}) or {}
+                props = schema.get("properties", {}) if isinstance(schema, dict) else {}
 
-                    print("------In_execute_box_move 33 ------")
+                print("------In_execute_box_move 33 ------", flush=True)
 
-                    args = {}
-                    for k in [f"{target_keyword}_id", "item_id", "id", "file_id", "folder_id"]:
+                args = {}
+                for k in [f"{target_keyword}_id", "item_id", "id", "file_id", "folder_id"]:
                         if k in props:
                             args[k] = item_id
                             break
@@ -534,23 +556,42 @@ async def _execute_batch_box_moves(items: list[dict], dest_id: str) -> list[dict
                             args[k] = {"id": dest_id} if (prop_type == "object" or k == "parent") else dest_id
                             break
 
-                    print("------Calling move tool------")
-                    call_res = await session.call_tool(move_tool.name, arguments=args)
-                    call_res_json = (
-                        call_res.model_dump_json(indent=2)
-                        if hasattr(call_res, "model_dump_json")
-                        else json.dumps(call_res, indent=2, default=str)
-                    )
-                    print(f"-------------Call response:\n{call_res_json}")
-                    print("------------move call completed--------")
+                tool_name = move_tool.get("name")
+                print("------Calling move tool------", flush=True)
+                call_payload = {
+                    "jsonrpc": "2.0",
+                    "id": f"call_{item_id}",
+                    "method": "tools/call",
+                    "params": {"name": tool_name, "arguments": args},
+                }
+                call_resp = await http_client.post(MCP_SERVER_URL, headers=http_headers, json=call_payload)
+                call_res_json = call_resp.json() if call_resp.headers.get("content-type", "").startswith("application/json") else {}
+                if not call_res_json and "data:" in call_resp.text:
+                    for line in call_resp.text.splitlines():
+                        if line.startswith("data:"):
+                            call_res_json = json.loads(line[5:].strip())
+                            break
 
-                    is_err = getattr(call_res, "isError", False)
-                    status = "error" if is_err else "success"
-                    results.append({"item_id": item_id, "item_name": item_name, "status": status, "tool": move_tool.name, "result": str(call_res)})
-        print(f"----------results: {results}----------");
+                print(f"-------------Call response:\n{json.dumps(call_res_json, indent=2, default=str)}", flush=True)
+                print("------------move call completed--------", flush=True)
+
+                is_err = call_res_json.get("result", {}).get("isError", False) or "error" in call_res_json
+                status = "error" if is_err else "success"
+                results.append({
+                    "item_id": item_id,
+                    "item_name": item_name,
+                    "status": status,
+                    "tool": tool_name,
+                    "result": str(call_res_json.get("result", call_res_json)),
+                })
+
+        print(f"----------results: {results}----------", flush=True)
         return results
     except Exception as exc:
-        return [{"status": "error", "message": str(exc)}]
+        err_msg = _format_exception(exc)
+        trace_text = traceback.format_exc()
+        print(f"------_execute_batch_box_moves failed: {err_msg}\n{trace_text}------", flush=True)
+        return [{"status": "error", "message": err_msg}]
 
 
 async def process_approval_decision(token: str, decision: str) -> HTMLResponse:
@@ -615,12 +656,36 @@ async def process_approval_decision(token: str, decision: str) -> HTMLResponse:
     dest_id = entity.get("destination_parent_id")
     dest_name = entity.get("destination_parent_name", dest_id)
 
-    print(f"----------Initiating move of {len(items)} item(s) to {dest_name} (ID: {dest_id})----------")
+    print(f"----------Initiating move of {len(items)} item(s) to {dest_name} (ID: {dest_id})----------", flush=True)
     results = await _execute_batch_box_moves(items, dest_id)
+
+    failed_items = [r for r in results if r.get("status") == "error"]
+    entity["execution_results"] = results
+
+    if failed_items:
+        entity["status"] = "EXECUTION_FAILED" if len(failed_items) == len(items) else "PARTIALLY_EXECUTED"
+        entity["failed_at"] = now
+        client.put(entity)
+        _emit_log("box_move_execution_failed", approval_token=token, results=results)
+
+        error_rows = "".join(
+            f"<li><strong>[{html.escape(f.get('item_name', 'Item'))}]</strong>: {html.escape(str(f.get('message', f.get('result', 'Move failed'))))}</li>"
+            for f in failed_items
+        )
+        return HTMLResponse(
+            f"""
+            <div style="font-family:sans-serif;padding:30px;max-width:600px;margin:40px auto;border:1px solid #d93025;border-radius:8px;">
+                <h2 style="color:#d93025;">⚠️ Move Execution Failed</h2>
+                <p>The approval was confirmed, but executing the move on Box MCP failed for the following item(s):</p>
+                <ul>{error_rows}</ul>
+                <p style="color:#5f6368;font-size:12px;">Status: <strong>{entity['status']}</strong> | Token: <code>{token[:8]}...</code> | Processed at {now.strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
+            </div>
+            """,
+            status_code=500 if entity["status"] == "EXECUTION_FAILED" else 207,
+        )
 
     entity["status"] = "APPROVED"
     entity["approved_at"] = now
-    entity["execution_results"] = results
     client.put(entity)
 
     _emit_log("----------box_move_approved_and_executed----------", approval_token=token, results=results)
@@ -644,8 +709,18 @@ async def process_approval_decision(token: str, decision: str) -> HTMLResponse:
 
 @approval_router.get("/approvals/respond", response_class=HTMLResponse)
 async def handle_approval_response(token: str = "", decision: str = ""):
-    print(f"---------Decision: {decision}---------")
+    print(f"---------Decision: {decision}---------", flush=True)
     return await process_approval_decision(token, decision)
+
+
+@approval_router.get("/config/telemetry", include_in_schema=False)
+async def telemetry_config_dummy():
+    return JSONResponse(content={"telemetry_enabled": False})
+
+
+@approval_router.get("/dev/apps/{app_name}/debug/trace/session/{session_id}", include_in_schema=False)
+async def session_trace_dummy(app_name: str, session_id: str):
+    return JSONResponse(content={"trace": []})
 
 
 def _register_approval_routes() -> None:
