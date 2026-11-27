@@ -35,7 +35,7 @@ APPROVAL_BASE_URL = os.getenv(
     "APPROVAL_BASE_URL",
     "https://box-adk-extractor-service-373951769736.us-central1.run.app",
 )
-DEFAULT_APPROVER_EMAIL = os.getenv("BOX_MOVE_APPROVER_EMAIL", "finance-approvals@yourdomain.com")
+DEFAULT_APPROVER_EMAIL = os.getenv("BOX_MOVE_APPROVER_EMAIL", "lndebele@gmail.com")
 
 _datastore_client: Optional[datastore.Client] = None
 
@@ -53,7 +53,7 @@ def _get_datastore_client() -> datastore.Client:
 
 
 def _emit_log(event: str, severity: str = "INFO", **fields) -> None:
-    """Emit single-line structured JSON logs that Cloud Logging parses into jsonPayload."""
+    """------------>Emit single-line structured JSON logs that Cloud Logging parses into jsonPayload."""
     payload = {"severity": severity, "event": event, **fields}
     print(json.dumps(payload, default=str), flush=True)
 
@@ -170,7 +170,7 @@ def _send_email_notification(to_email: str, subject: str, html_body: str) -> Non
             "https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {resend_api_key.strip()}"},
             json={
-                "from": os.getenv("EMAIL_FROM", "onboarding@resend.dev"),
+                "from": os.getenv("EMAIL_FROM", "support@gmail.com"),
                 "to": [to_email],
                 "subject": subject,
                 "html": html_body,
@@ -381,7 +381,7 @@ def request_box_move_approval(
         }
 
     _emit_log(
-        "box_move_approval_requested",
+        "-------box_move_approval_requested",
         approval_token_prefix=approval_token[:8],
         item_count=len(normalized_items),
         items=normalized_items,
@@ -438,6 +438,7 @@ box_tools = MCPToolset(
         "box_folder_info_tool",
         "box_file_metadata_create_tool",
         "box_file_metadata_update_tool",
+        "box_file_move_tool",
     ],
 )
 
@@ -512,29 +513,33 @@ async def _execute_batch_box_moves(items: list[dict], dest_id: str) -> list[dict
                 item_id = it["item_id"]
                 item_type = it["item_type"]
                 item_name = it["item_name"]
-                target_keyword = "file" if item_type == "file" else "folder"
 
                 print(f"----------Moving the item: {item_id} ({item_name}) to destination {dest_id}----------", flush=True)
                 print("------In_execute_box_move 11 ------", flush=True)
 
+                # Canonical tool names defined by Box MCP server in priority order
+                expected_tools = (
+                    ["box_file_move_tool", "box_file_update_tool"]
+                    if item_type == "file"
+                    else ["box_folder_move_tool", "box_folder_update_tool"]
+                )
+
                 move_tool = None
-                for t in tools:
-                    name = t.get("name", "").lower()
-                    print(f"------In_execute_box_move 22 Tool : {t.get('name')} ------", flush=True)
-                    if ("move" in name or "update" in name) and target_keyword in name:
-                        print("----------Move Tool Found------------", flush=True)
-                        move_tool = t
+                tools_by_name = {t.get("name", ""): t for t in tools}
+                for candidate in expected_tools:
+                    if candidate in tools_by_name:
+                        move_tool = tools_by_name[candidate]
+                        print(f"----------Move Tool Found: {candidate}------------", flush=True)
                         break
-                if not move_tool:
-                    for t in tools:
-                        name = t.get("name", "").lower()
-                        if "move" in name or "update" in name:
-                            move_tool = t
-                            break
 
                 if not move_tool:
-                    tool_names = [t.get("name") for t in tools]
-                    results.append({"item_id": item_id, "item_name": item_name, "status": "error", "message": f"No move tool for {item_type}. Available: {tool_names}"})
+                    tool_names = list(tools_by_name.keys())
+                    err_msg = (
+                        f"Correct Box MCP tool not found to move {item_type} '{item_name}'. "
+                        f"Expected one of {expected_tools}. Available MCP tools: {tool_names}"
+                    )
+                    print(f"------{err_msg}------", flush=True)
+                    results.append({"item_id": item_id, "item_name": item_name, "status": "error", "message": err_msg})
                     continue
 
                 schema = move_tool.get("inputSchema", {}) or {}
@@ -543,7 +548,8 @@ async def _execute_batch_box_moves(items: list[dict], dest_id: str) -> list[dict
                 print("------In_execute_box_move 33 ------", flush=True)
 
                 args = {}
-                for k in [f"{target_keyword}_id", "item_id", "id", "file_id", "folder_id"]:
+                id_keys = ["file_id", "item_id", "id"] if item_type == "file" else ["folder_id", "item_id", "id"]
+                for k in id_keys:
                     if k in props:
                         args[k] = item_id
                         break
